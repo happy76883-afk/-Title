@@ -25,7 +25,7 @@ async function boot() {
     pyodide = await loadPyodide();
 
     setStatus("2/3 openpyxl, numpy 패키지 설치 중...");
-    await pyodide.loadPackage(["openpyxl", "numpy"]);
+    await pyodide.loadPackage(["numpy", "pandas"]);
 
     setStatus("3/3 model.py 불러오는 중...");
     const pyResp = await fetch("./model.py");
