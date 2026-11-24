@@ -1,4 +1,7 @@
-const BASIC_FILE = "(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx";
+const CANDIDATE_FILES = [
+  "(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx",
+  "basic.xlsx"
+];
 
 let pyodide = null;
 let sheetData = null;
@@ -7,34 +10,81 @@ let shocks = [];
 
 const $ = (id) => document.getElementById(id);
 
+function setStatus(msg, isError = false) {
+  const el = $("statusText");
+  el.textContent = msg;
+  el.style.color = isError ? "#b91c1c" : "#0b4a82";
+}
+
 async function boot() {
-  pyodide = await loadPyodide();
-  await pyodide.loadPackage(["openpyxl", "numpy"]);
-  const code = await (await fetch("model.py")).text();
-  await pyodide.runPythonAsync(code);
-  $("statusText").textContent = "준비 완료. '기본부문 불러오기'를 누르세요.";
-  $("loadBasicBtn").disabled = false;
+  try {
+    setStatus("1/3 Pyodide 엔진 다운로드 중... (10~20초 소요)");
+    if (typeof loadPyodide !== "function") {
+      throw new Error("Pyodide 스크립트를 불러오지 못했습니다. 네트워크를 확인하세요.");
+    }
+    pyodide = await loadPyodide();
+
+    setStatus("2/3 openpyxl, numpy 패키지 설치 중...");
+    await pyodide.loadPackage(["openpyxl", "numpy"]);
+
+    setStatus("3/3 model.py 불러오는 중...");
+    const pyResp = await fetch("./model.py");
+    if (!pyResp.ok) {
+      throw new Error(`model.py 파일을 찾을 수 없습니다 (HTTP ${pyResp.status})`);
+    }
+    const code = await pyResp.text();
+    await pyodide.runPythonAsync(code);
+
+    setStatus("준비 완료! 오른쪽 위 '기본부문 불러오기' 버튼을 누르세요.");
+    $("loadBasicBtn").disabled = false;
+  } catch (err) {
+    setStatus("초기화 오류: " + (err.message || err), true);
+  }
+}
+
+async function fetchExcelBytes() {
+  const tried = [];
+  for (const name of CANDIDATE_FILES) {
+    for (const url of ["./" + encodeURI(name), "./" + name]) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          const buf = await res.arrayBuffer();
+          return { name, bytes: new Uint8Array(buf) };
+        }
+        tried.push(`${name} (${res.status})`);
+      } catch (e) {
+        tried.push(`${name} (네트워크 오류)`);
+      }
+    }
+  }
+  throw new Error("엑셀 파일을 찾지 못했습니다: " + tried.join(", "));
 }
 
 async function loadBasic() {
   $("loadBasicBtn").disabled = true;
-  $("statusText").textContent = "기본부문 엑셀 불러오는 중...";
+  try {
+    setStatus("기본부문 엑셀 파일 불러오는 중...");
+    const { name, bytes } = await fetchExcelBytes();
 
-  const res = await fetch(encodeURI(BASIC_FILE));
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  pyodide.globals.set("js_bytes", bytes);
-  const meta = JSON.parse(await pyodide.runPythonAsync("load_basic_workbook(js_bytes)"));
+    setStatus(`'${name}' 분석 중...`);
+    pyodide.globals.set("js_bytes", bytes);
+    const meta = JSON.parse(await pyodide.runPythonAsync("load_basic_workbook(js_bytes)"));
 
-  $("sheetSelect").innerHTML = meta.sheets.map((s) => `<option value="${s}">${s}</option>`).join("");
-  ["sheetSelect", "rowSearch", "rowSelect", "colSearch", "simSearch", "simIndustrySelect", "simAmount", "addShockBtn", "resetShockBtn"]
-    .forEach((id) => { $(id).disabled = false; });
+    $("sheetSelect").innerHTML = meta.sheets.map((s) => `<option value="${s}">${s}</option>`).join("");
+    ["sheetSelect", "rowSearch", "rowSelect", "colSearch", "simSearch", "simIndustrySelect", "simAmount", "addShockBtn", "resetShockBtn"]
+      .forEach((id) => { $(id).disabled = false; });
 
-  industries = JSON.parse(await pyodide.runPythonAsync("get_industries()"));
-  renderIndustries("");
+    industries = JSON.parse(await pyodide.runPythonAsync("get_industries()"));
+    renderIndustries("");
 
-  await onSheetChange();
-  $("statusText").textContent = `기본부문 로딩 완료 (${meta.sheets.length}개 시트)`;
-  $("loadBasicBtn").disabled = false;
+    await onSheetChange();
+    setStatus(`연동 완료! '${name}' (시트 ${meta.sheets.length}개)`);
+  } catch (err) {
+    setStatus("엑셀 연동 실패: " + (err.message || err), true);
+  } finally {
+    $("loadBasicBtn").disabled = false;
+  }
 }
 
 async function onSheetChange() {
@@ -84,27 +134,31 @@ function renderIndustries(kw) {
 }
 
 async function applyShock() {
-  const code = $("simIndustrySelect").value;
-  const amount = Number($("simAmount").value);
-  if (!code || !Number.isFinite(amount) || amount === 0) return;
+  try {
+    const code = $("simIndustrySelect").value;
+    const amount = Number($("simAmount").value);
+    if (!code || !Number.isFinite(amount) || amount === 0) return;
 
-  const ind = industries.find((d) => d.code === code);
-  const found = shocks.find((s) => s.code === code);
-  if (found) found.amount += amount;
-  else shocks.push({ code, name: ind ? ind.name : code, amount });
+    const ind = industries.find((d) => d.code === code);
+    const found = shocks.find((s) => s.code === code);
+    if (found) found.amount += amount;
+    else shocks.push({ code, name: ind ? ind.name : code, amount });
 
-  $("shockChips").innerHTML = shocks
-    .map((s) => `<span class="chip">[${s.code}] ${s.name} +${s.amount.toLocaleString("ko-KR")}백만원</span>`)
-    .join("");
+    $("shockChips").innerHTML = shocks
+      .map((s) => `<span class="chip">[${s.code}] ${s.name} +${s.amount.toLocaleString("ko-KR")}백만원</span>`)
+      .join("");
 
-  pyodide.globals.set("js_shocks", JSON.stringify(shocks));
-  const r = JSON.parse(await pyodide.runPythonAsync("simulate(js_shocks)"));
-  $("simResultBox").hidden = false;
-  $("simResultBox").innerHTML =
-    `최종수요 증가: <b>${r.total_shock.toLocaleString("ko-KR")}</b> 백만원 · ` +
-    `생산유발액: <b>${r.total_output.toLocaleString("ko-KR")}</b> 백만원 · ` +
-    `부가가치유발액: <b>${r.total_va.toLocaleString("ko-KR")}</b> 백만원 · ` +
-    `수입유발액: <b>${r.total_import.toLocaleString("ko-KR")}</b> 백만원`;
+    pyodide.globals.set("js_shocks", JSON.stringify(shocks));
+    const r = JSON.parse(await pyodide.runPythonAsync("simulate(js_shocks)"));
+    $("simResultBox").hidden = false;
+    $("simResultBox").innerHTML =
+      `최종수요 증가: <b>${r.total_shock.toLocaleString("ko-KR")}</b> 백만원 · ` +
+      `생산유발액: <b>${r.total_output.toLocaleString("ko-KR")}</b> 백만원 · ` +
+      `부가가치유발액: <b>${r.total_va.toLocaleString("ko-KR")}</b> 백만원 · ` +
+      `수입유발액: <b>${r.total_import.toLocaleString("ko-KR")}</b> 백만원`;
+  } catch (err) {
+    setStatus("시뮬레이션 오류: " + (err.message || err), true);
+  }
 }
 
 $("loadBasicBtn").disabled = true;
