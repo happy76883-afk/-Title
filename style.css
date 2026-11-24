@@ -1,0 +1,44 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif;
+  background: #f4f6f8;
+  color: #1f2937;
+}
+.top-banner {
+  background: #0b4a82;
+  color: #fff;
+  padding: 12px 16px;
+  text-align: center;
+}
+.top-banner h1 { margin: 0; font-size: 1rem; font-weight: 600; }
+.page { max-width: 960px; margin: 20px auto; padding: 0 14px 40px; display: flex; flex-direction: column; gap: 18px; }
+.panel { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 22px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.panel h2 { margin: 0 0 8px; font-size: 1.2rem; }
+.hint { margin: 0 0 14px; font-size: 0.9rem; color: #4b5563; }
+.status-msg { font-size: 0.85rem; color: #0b4a82; margin-bottom: 12px; }
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 0.88rem; font-weight: 600; margin-bottom: 6px; }
+.field input, .field select {
+  width: 100%; padding: 9px 11px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.92rem; background: #fff;
+}
+.field input:disabled, .field select:disabled { background: #f1f5f9; color: #94a3b8; }
+.btn-load {
+  background: #0f4c5c; color: #fff; border: none; border-radius: 6px; padding: 9px 14px; font-weight: 600; cursor: pointer; font-size: 0.88rem;
+}
+.btn-load:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-sub {
+  background: #e5e7eb; color: #374151; border: none; border-radius: 6px; padding: 9px 14px; font-weight: 600; cursor: pointer; font-size: 0.88rem;
+}
+.action-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.empty-msg { font-size: 0.86rem; color: #6b7280; margin: 8px 0 12px; }
+.unit-note { font-size: 0.82rem; color: #6b7280; margin: 10px 0 0; }
+.table-box { max-height: 320px; overflow: auto; border: 1px solid #e2e8f0; border-radius: 6px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th, td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+thead th { position: sticky; top: 0; background: #f8fafc; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip { background: #e6f4f1; color: #0f4c5c; padding: 5px 10px; border-radius: 999px; font-size: 0.84rem; font-weight: 600; }
+.result-box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 14px; font-size: 0.9rem; }
