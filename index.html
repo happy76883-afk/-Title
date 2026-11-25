@@ -36,7 +36,7 @@
     .container {
       max-width: 1120px;
       margin: 20px auto;
-      padding: 0 16px 56px;
+      padding: 0 16px 60px;
       display: grid;
       gap: 18px;
     }
@@ -78,6 +78,11 @@
     }
     .btn-teal { background: var(--teal); }
     .btn-sec { background: #475569; }
+    .btn-sm {
+      height: 32px;
+      padding: 0 12px;
+      font-size: 12.5px;
+    }
     .btn:hover { opacity: 0.92; }
     .field { margin-bottom: 14px; }
     .field label {
@@ -142,7 +147,7 @@
     }
     .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
       gap: 12px;
       margin-top: 14px;
     }
@@ -191,7 +196,7 @@
         선택한 행이 각 열과 어떻게 연결되는지 확인합니다. 산업 행뿐 아니라 원표의 합계·분석지표 행도 포함됩니다.
       </p>
 
-      <div id="auto-status" class="auto-bar">data/ 폴더 파일 자동 로딩 중...</div>
+      <div id="auto-status" class="auto-bar">data/ 폴더의 4개 엑셀 파일을 자동으로 읽는 중입니다...</div>
 
       <div class="field">
         <label for="dataset-select">분류 체계 (기본 / 통합대 / 통합중 / 통합소)</label>
@@ -223,7 +228,7 @@
         <table id="raw-table">
           <thead>
             <tr>
-              <th>열 코드/순번</th>
+              <th>열 코드</th>
               <th>열 이름</th>
               <th class="num">값</th>
             </tr>
@@ -235,7 +240,10 @@
 
     <!-- 2. 국내 생산물 최종수요 증가 시뮬레이션 -->
     <section class="card">
-      <h2>2. 국내 생산물 최종수요 증가 시뮬레이션</h2>
+      <div class="card-head">
+        <h2>2. 국내 생산물 최종수요 증가 시뮬레이션</h2>
+        <button id="btn-csv-sim" class="btn btn-sec btn-sm" type="button">CSV 내려받기</button>
+      </div>
       <p class="desc">
         수입 완제품 구매를 제외한 국내 생산물 최종수요 증가를 입력하세요. 여러 산업의 증가액은 합산됩니다.
       </p>
@@ -274,7 +282,8 @@
             <tr>
               <th>순위</th>
               <th>산업명</th>
-              <th class="num">투입계수 기반 간접유발(백만원)</th>
+              <th class="num">직접 증가(백만원)</th>
+              <th class="num">간접 파급(백만원)</th>
               <th class="num">수요유발 파급합(백만원)</th>
             </tr>
           </thead>
@@ -285,9 +294,12 @@
 
     <!-- 3. 전·후방 연쇄효과 -->
     <section class="card">
-      <h2>3. 전·후방 연쇄효과</h2>
+      <div class="card-head">
+        <h2>3. 전·후방 연쇄효과</h2>
+        <button id="btn-csv-chain" class="btn btn-sec btn-sm" type="button">CSV 내려받기</button>
+      </div>
       <p class="desc">
-        기본·통합대·통합중·통합소 분류별로 선택한 산업의 후방연쇄(투입계수 합)와 전방연쇄(산출계수 합), 연결 산업 순위를 계산합니다.
+        기본·통합대·통합중·통합소 분류별로 선택한 산업의 후방연쇄(투입계수 합), 전방연쇄(산출계수 합), 영향력계수·감응도계수를 계산합니다.
       </p>
 
       <div class="two-col">
@@ -313,8 +325,8 @@
             <tr>
               <th>순위</th>
               <th>연결 산업명</th>
-              <th class="num">투입계수 (a_ij, 후방)</th>
-              <th class="num">산출계수 (b_ij, 전방)</th>
+              <th class="num">투입계수 (후방)</th>
+              <th class="num">산출계수 (전방)</th>
               <th class="num">연결 강도 합</th>
             </tr>
           </thead>
@@ -325,7 +337,10 @@
 
     <!-- 4. 공급·수요 충격 시뮬레이션 -->
     <section class="card">
-      <h2>4. 공급·수요 충격 시뮬레이션</h2>
+      <div class="card-head">
+        <h2>4. 공급·수요 충격 시뮬레이션</h2>
+        <button id="btn-csv-shock" class="btn btn-sec btn-sm" type="button">CSV 내려받기</button>
+      </div>
       <p class="desc">
         선택한 분류와 산업에 대해 최종수요 충격률(%) 및 공급/원가 충격률(%)을 입력해 파급 추정치를 계산합니다.
       </p>
@@ -376,7 +391,8 @@
       </div>
 
       <div class="note-box">
-        <strong>계산 기준 안내:</strong> 추출된 내생거래 행렬 <em>Z</em>를 바탕으로 후방연쇄는 투입계수(<em>a<sub>ij</sub> = z<sub>ij</sub> / X<sub>j</sub></em>), 전방연쇄는 산출계수(<em>b<sub>ij</sub> = z<sub>ij</sub> / X<sub>i</sub></em>) 기준으로 계산합니다.
+        <strong>기준 안내:</strong> 현재 선택된 분류의 첫 번째 표 시트를 기준으로 내생 거래 행렬을 추출합니다.
+        영향력계수·감응도계수는 전체 부문 평균 대비 상대 연쇄 수준(1 초과 시 평균 이상)을 나타냅니다.
       </div>
     </section>
   </div>
