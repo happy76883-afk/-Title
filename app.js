@@ -6,9 +6,9 @@ const FILES = [
 ];
 
 const state = {
-  workbooks: {},
+  workbooks: {}, // key -> { label, sheetNames, sheets: { sheetName: parsed } }
   currentDatasetKey: "basic",
-  shockItems: []
+  shockItems: [] // { key, datasetLabel, sectorIdx, sectorCode, sectorName, amount }
 };
 
 function toNum(v) {
@@ -20,78 +20,145 @@ function toNum(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function isNumericToken(rawVal) {
-  if (typeof rawVal === "number") return Number.isFinite(rawVal);
-  if (rawVal == null) return false;
-  const cleaned = String(rawVal).replace(/,/g, "").trim();
-  return /^-?\d+(\.\d+)?$/.test(cleaned);
+function isNumericCell(v) {
+  if (typeof v === "number") return Number.isFinite(v);
+  if (v == null) return false;
+  const s = String(v).replace(/,/g, "").trim();
+  return /^-?\d+(\.\d+)?$/.test(s);
 }
 
+function isCodeToken(v) {
+  const s = String(v ?? "").trim();
+  return /^[A-Z]?\d{2,7}$/i.test(s);
+}
+
+function isPurePunctOrNum(v) {
+  const s = String(v ?? "").replace(/,/g, "").trim();
+  return !s || /^-?[\d.]+$/.test(s) || /^[-·…()]+$/.test(s);
+}
+
+function isLabelText(v) {
+  const s = String(v ?? "").trim();
+  return Boolean(s) && !isCodeToken(s) && !isPurePunctOrNum(s);
+}
+
+/**
+ * 한국은행 투입산출표 시트 파서
+ * - 코드 행과 부문명 행을 분리해 실제 한글/영문 부문명을 열 이름·행 이름으로 매핑합니다.
+ */
 function parseSheetData(ws) {
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
   if (!Array.isArray(raw) || raw.length === 0) {
-    return { headers: [], allRows: [], sectors: [], matrix: [] };
+    return { sheetTitle: "", colCodes: [], colNames: [], allRows: [], sectors: [], matrix: [] };
   }
 
-  let headerRowIdx = 0;
-  let bestScore = -1;
-  for (let r = 0; r < Math.min(raw.length, 15); r++) {
+  const maxCols = Math.max(...raw.map((r) => (Array.isArray(r) ? r.length : 0)), 1);
+
+  // 상단 25행에서 코드 헤더 행과 부문명/항목명 헤더 행 찾기
+  let codeRowIdx = -1;
+  let nameRowIdx = -1;
+  let bestNameScore = -1;
+
+  for (let r = 0; r < Math.min(raw.length, 25); r++) {
     const row = raw[r] || [];
-    const nonEmpty = row.filter((c) => String(c).trim() !== "").length;
-    if (nonEmpty > bestScore) {
-      bestScore = nonEmpty;
-      headerRowIdx = r;
+    const codeCount = row.filter((c) => isCodeToken(c)).length;
+    const labelCells = row.filter((c) => isLabelText(c));
+    const kwBonus = row.some((c) =>
+      /(부문|합계|중간투입|부가가치|최종수요|총산출|수입|수출|소비|투자|피용자)/.test(String(c ?? ""))
+    )
+      ? 6
+      : 0;
+
+    if (codeCount >= 3 && codeRowIdx === -1) {
+      codeRowIdx = r;
+    }
+
+    const score = labelCells.length + kwBonus;
+    if (labelCells.length >= 2 && score > bestNameScore) {
+      bestNameScore = score;
+      nameRowIdx = r;
     }
   }
 
-  const headerRow = raw[headerRowIdx] || [];
-  const maxCols = Math.max(...raw.map((r) => (Array.isArray(r) ? r.length : 0)), headerRow.length);
+  if (nameRowIdx === -1) nameRowIdx = codeRowIdx !== -1 ? codeRowIdx : 0;
 
-  const headers = Array.from({ length: maxCols }, (_, c) => {
-    const h = String(headerRow[c] ?? "").trim();
-    return h || `열 ${c + 1}`;
+  const codeRow = codeRowIdx !== -1 ? raw[codeRowIdx] || [] : [];
+  const nameRow = raw[nameRowIdx] || [];
+  const subNameRow =
+    nameRowIdx + 1 < raw.length &&
+    (raw[nameRowIdx + 1] || []).filter((c) => isLabelText(c)).length >= 3
+      ? raw[nameRowIdx + 1]
+      : [];
+
+  const colCodes = Array.from({ length: maxCols }, (_, c) => {
+    const cd = String(codeRow[c] ?? "").trim();
+    return cd || `열${c + 1}`;
   });
 
+  const colNames = Array.from({ length: maxCols }, (_, c) => {
+    const n1 = String(nameRow[c] ?? "").trim();
+    const n2 = String(subNameRow[c] ?? "").trim();
+    if (isLabelText(n1)) return n1;
+    if (isLabelText(n2)) return n2;
+    return n1 || n2 || colCodes[c];
+  });
+
+  const dataStartRow = Math.max(codeRowIdx, nameRowIdx, subNameRow.length ? nameRowIdx + 1 : 0) + 1;
   const allRows = [];
-  for (let r = headerRowIdx + 1; r < raw.length; r++) {
+
+  for (let r = dataStartRow; r < raw.length; r++) {
     const row = raw[r];
     if (!Array.isArray(row)) continue;
 
-    let nameIdx = -1;
+    // 헤더 행 자체가 반복되는 경우 제외
+    const sameHeader = row.filter((cell, c) => {
+      const val = String(cell ?? "").trim();
+      return val && (val === String(nameRow[c] ?? "").trim() || val === String(subNameRow[c] ?? "").trim());
+    }).length;
+    if (sameHeader >= 3) continue;
+
+    // 앞쪽 5열에서 행 코드와 실제 행 이름 추출
+    let rowCode = "";
     let rowName = "";
-    for (let c = 0; c < Math.min(4, maxCols); c++) {
+
+    for (let c = 0; c < Math.min(5, maxCols); c++) {
       const val = String(row[c] ?? "").trim();
-      if (val && !/^-?\d[\d,.]*$/.test(val)) {
-        nameIdx = c;
+      if (!val) continue;
+      if (!rowCode && isCodeToken(val)) {
+        rowCode = val;
+      } else if (!rowName && isLabelText(val)) {
         rowName = val;
-        break;
       }
     }
+
     if (!rowName) continue;
 
-    const codeVal = nameIdx > 0 ? String(row[nameIdx - 1] ?? "").trim() : "";
-    const values = Array.from({ length: maxCols }, (_, c) => ({
+    const cells = Array.from({ length: maxCols }, (_, c) => ({
       colIdx: c,
-      colCode: headers[c],
-      colName: String(headerRow[c] ?? "").trim() || headers[c],
+      colCode: colCodes[c],
+      colName: colNames[c],
       rawVal: row[c],
-      numVal: toNum(row[c])
+      numVal: toNum(row[c]),
+      isNum: isNumericCell(row[c])
     }));
 
     allRows.push({
       rowIdx: r,
-      code: codeVal,
+      code: rowCode,
       name: rowName,
-      values
+      cells
     });
   }
 
-  const numericRows = allRows.filter(
-    (item) => item.values.filter((v) => isNumericToken(v.rawVal)).length >= 3
-  );
+  // 시뮬레이션·연쇄효과용 내생 산업 행 추출(숫자 열이 5개 이상인 행)
+  const sectorRows = allRows.filter((item) => item.cells.filter((cell) => cell.isNum).length >= 5);
 
-  const n = numericRows.length;
-  const sectors = numericRows.map((item, idx) => ({
+  // 첫 번째 숫자 열 위치 기준으로 정방 행렬 추출
+  const firstNumColIdx =
+    sectorRows.length > 0 ? Math.max(0, sectorRows[0].cells.findIndex((cell) => cell.isNum)) : 2;
+
+  const n = sectorRows.length;
+  const sectors = sectorRows.map((item, idx) => ({
     idx,
     code: item.code || String(idx + 1).padStart(3, "0"),
     name: item.name
@@ -99,38 +166,50 @@ function parseSheetData(ws) {
 
   const matrix = Array.from({ length: n }, (_, i) =>
     Array.from({ length: n }, (_, j) => {
-      const cell = numericRows[i].values[j + 1] || numericRows[i].values[j];
+      const cell = sectorRows[i].cells[firstNumColIdx + j];
       return cell ? cell.numVal : 0;
     })
   );
 
-  return { headers, allRows, sectors, matrix };
+  return { colCodes, colNames, allRows, sectors, matrix };
+}
+
+function getActiveSheet(datasetKey = state.currentDatasetKey) {
+  const ds = state.workbooks[datasetKey];
+  if (!ds || !ds.sheetNames.length) return null;
+  const chosenSheet =
+    datasetKey === state.currentDatasetKey
+      ? document.getElementById("sheet-select")?.value || ds.sheetNames[0]
+      : ds.sheetNames[0];
+  return {
+    ds,
+    sheetName: chosenSheet,
+    data: ds.sheets[chosenSheet] || ds.sheets[ds.sheetNames[0]]
+  };
 }
 
 function renderAutoStatus() {
   const bar = document.getElementById("auto-status");
   const parts = FILES.map((f) => {
-    const loaded = !!state.workbooks[f.key];
-    return `${f.label}: <span class="${loaded ? "ok" : "err"}">${loaded ? "자동 로드 완료" : "미로드"}</span>`;
+    const ready = !!state.workbooks[f.key];
+    return `${f.label}: <span class="${ready ? "ok" : "err"}">${ready ? "자동 로드 완료" : "미로드"}</span>`;
   });
   bar.innerHTML = parts.join(" &nbsp;|&nbsp; ");
 }
 
-function populateDatasetSelects() {
-  const selects = [
-    document.getElementById("dataset-select"),
-    document.getElementById("chain-dataset"),
-    document.getElementById("shock-dataset")
-  ];
-
+function syncDatasetDropdowns() {
   const available = FILES.filter((f) => state.workbooks[f.key]);
-  for (const sel of selects) {
+  const ids = ["dataset-select", "chain-dataset", "shock-dataset"];
+
+  for (const id of ids) {
+    const sel = document.getElementById(id);
     sel.innerHTML = "";
     for (const f of available) {
-      const cnt = Object.values(state.workbooks[f.key].sheets)[0]?.sectors.length || 0;
+      const firstSheetKey = state.workbooks[f.key].sheetNames[0];
+      const cnt = state.workbooks[f.key].sheets[firstSheetKey]?.sectors.length || 0;
       const opt = document.createElement("option");
       opt.value = f.key;
-      opt.textContent = `${f.label} (${cnt}개 부문)`;
+      opt.textContent = `${f.label} (${cnt}개 산업)`;
       sel.appendChild(opt);
     }
     if (state.workbooks[state.currentDatasetKey]) {
@@ -139,96 +218,92 @@ function populateDatasetSelects() {
   }
 }
 
-function initSheetSelect(preferredSheetName = null) {
+function populateSheetDropdown(preferredSheet = null) {
   const ds = state.workbooks[state.currentDatasetKey];
-  const sheetSel = document.getElementById("sheet-select");
-  sheetSel.innerHTML = "";
-
+  const sel = document.getElementById("sheet-select");
+  sel.innerHTML = "";
   if (!ds) return;
-  const sheetNames = Object.keys(ds.sheets);
-  for (const name of sheetNames) {
+
+  for (const sName of ds.sheetNames) {
     const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    sheetSel.appendChild(opt);
+    opt.value = sName;
+    opt.textContent = sName;
+    sel.appendChild(opt);
   }
 
-  if (preferredSheetName && ds.sheets[preferredSheetName]) {
-    sheetSel.value = preferredSheetName;
+  if (preferredSheet && ds.sheets[preferredSheet]) {
+    sel.value = preferredSheet;
   }
 
-  populateRowSelect();
-  populateSimSectors();
-  populateChainSectors();
-  populateShockSectors();
+  populateRowDropdown();
+  populateSimDropdown();
+  populateChainDropdown();
+  populateShockDropdown();
 }
 
-function populateRowSelect() {
-  const ds = state.workbooks[state.currentDatasetKey];
-  const sheetName = document.getElementById("sheet-select").value;
-  const search = document.getElementById("row-search").value.trim().toLowerCase();
-  const rowSel = document.getElementById("row-select");
-  rowSel.innerHTML = "";
+function populateRowDropdown() {
+  const active = getActiveSheet();
+  const sel = document.getElementById("row-select");
+  sel.innerHTML = "";
+  if (!active) return;
 
-  if (!ds || !ds.sheets[sheetName]) return;
-  const rows = ds.sheets[sheetName].allRows;
-  const filtered = rows.filter(
-    (r) => !search || r.name.toLowerCase().includes(search) || r.code.toLowerCase().includes(search)
+  const q = document.getElementById("row-search").value.trim().toLowerCase();
+  const list = active.data.allRows.filter(
+    (r) => !q || r.name.toLowerCase().includes(q) || r.code.toLowerCase().includes(q)
   );
 
-  filtered.forEach((r, idx) => {
+  list.forEach((r, idx) => {
     const opt = document.createElement("option");
     opt.value = String(r.rowIdx);
     opt.textContent = `${r.code ? `[${r.code}] ` : ""}${r.name}`;
     if (idx === 0) opt.selected = true;
-    rowSel.appendChild(opt);
+    sel.appendChild(opt);
   });
 
-  renderRawConnections();
+  renderRawTable();
 }
 
-function renderRawConnections() {
-  const ds = state.workbooks[state.currentDatasetKey];
-  const sheetName = document.getElementById("sheet-select").value;
-  const rowIdx = Number(document.getElementById("row-select").value);
-  const colQuery = document.getElementById("col-search").value.trim().toLowerCase();
+function renderRawTable() {
+  const active = getActiveSheet();
   const tbody = document.querySelector("#raw-table tbody");
   tbody.innerHTML = "";
+  if (!active) return;
 
-  if (!ds || !ds.sheets[sheetName]) return;
-  const targetRow = ds.sheets[sheetName].allRows.find((r) => r.rowIdx === rowIdx);
+  const rowIdx = Number(document.getElementById("row-select").value);
+  const colQ = document.getElementById("col-search").value.trim().toLowerCase();
+  const targetRow = active.data.allRows.find((r) => r.rowIdx === rowIdx);
   if (!targetRow) return;
 
-  const matchedCols = targetRow.values.filter((v) => {
-    const labelText = `${v.colCode} ${v.colName}`.toLowerCase();
-    return !colQuery || labelText.includes(colQuery);
+  const filteredCols = targetRow.cells.filter((cell) => {
+    const combined = `${cell.colCode} ${cell.colName}`.toLowerCase();
+    return !colQ || combined.includes(colQ);
   });
 
-  tbody.innerHTML = matchedCols
-    .slice(0, 150)
-    .map(
-      (c, i) => `
-      <tr>
-        <td>${c.colCode || i + 1}</td>
-        <td>${c.colName}</td>
-        <td class="num">${typeof c.rawVal === "number" ? c.rawVal.toLocaleString("ko-KR") : String(c.rawVal ?? "")}</td>
-      </tr>
-    `
-    )
+  tbody.innerHTML = filteredCols
+    .slice(0, 200)
+    .map((cell) => {
+      const displayVal = cell.isNum
+        ? cell.numVal.toLocaleString("ko-KR", { maximumFractionDigits: 4 })
+        : String(cell.rawVal ?? "");
+      return `
+        <tr>
+          <td>${cell.colCode}</td>
+          <td>${cell.colName}</td>
+          <td class="num">${displayVal}</td>
+        </tr>
+      `;
+    })
     .join("");
 }
 
-function populateSimSectors() {
-  const ds = state.workbooks[state.currentDatasetKey];
-  const q = document.getElementById("sim-search").value.trim().toLowerCase();
+function populateSimDropdown() {
+  const active = getActiveSheet();
   const sel = document.getElementById("sim-sector");
   sel.innerHTML = "";
+  if (!active) return;
 
-  if (!ds) return;
-  const firstSheet = Object.values(ds.sheets)[0];
-  if (!firstSheet) return;
-
-  const list = firstSheet.sectors.filter(
+  const q = document.getElementById("sim-search").value.trim().toLowerCase();
+  const list = active.data.sectors.filter(
     (s) => !q || s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)
   );
 
@@ -247,14 +322,14 @@ function renderBasket() {
     return;
   }
 
-  const total = state.shockItems.reduce((acc, item) => acc + item.amount, 0);
+  const total = state.shockItems.reduce((sum, item) => sum + item.amount, 0);
   box.innerHTML =
     state.shockItems
       .map(
-        (item, i) => `
+        (item, idx) => `
       <div class="basket-item">
-        <span><strong>${item.sectorName}</strong> (${item.datasetLabel}) — +${item.amount.toLocaleString("ko-KR")} 백만원</span>
-        <button class="del-btn" type="button" data-del="${i}">삭제</button>
+        <span><strong>[${item.sectorCode}] ${item.sectorName}</strong> (${item.datasetLabel}) — +${item.amount.toLocaleString("ko-KR")} 백만원</span>
+        <button class="del-btn" type="button" data-del="${idx}">삭제</button>
       </div>
     `
       )
@@ -272,19 +347,20 @@ function renderBasket() {
 }
 
 function addShockItem() {
-  const ds = state.workbooks[state.currentDatasetKey];
-  if (!ds) return;
-  const firstSheet = Object.values(ds.sheets)[0];
+  const active = getActiveSheet();
+  if (!active) return;
+
   const sectorIdx = Number(document.getElementById("sim-sector").value || 0);
   const amount = Math.max(0, toNum(document.getElementById("sim-amount").value));
-  const sector = firstSheet.sectors[sectorIdx];
-  if (!sector || amount <= 0) return;
+  const sec = active.data.sectors[sectorIdx];
+  if (!sec || amount <= 0) return;
 
   state.shockItems.push({
     key: state.currentDatasetKey,
-    datasetLabel: ds.label,
+    datasetLabel: active.ds.label,
     sectorIdx,
-    sectorName: sector.name,
+    sectorCode: sec.code,
+    sectorName: sec.name,
     amount
   });
 
@@ -293,40 +369,43 @@ function addShockItem() {
 }
 
 function runSimulation() {
-  const ds = state.workbooks[state.currentDatasetKey];
+  const active = getActiveSheet();
   const kpiEl = document.getElementById("sim-kpi");
   const tbody = document.querySelector("#sim-table tbody");
 
-  if (!ds) {
+  if (!active || !active.data.sectors.length) {
     kpiEl.innerHTML = "";
     tbody.innerHTML = "";
     return;
   }
 
-  const sheet = Object.values(ds.sheets)[0];
-  if (!sheet || !sheet.sectors.length) return;
-
-  const n = sheet.sectors.length;
+  const { sectors, matrix } = active.data;
+  const n = sectors.length;
   const colTotals = Array.from({ length: n }, (_, c) =>
-    sheet.matrix.reduce((a, r) => a + Math.max(0, r[c] || 0), 0) || 1
+    matrix.reduce((sum, r) => sum + Math.max(0, r[c] || 0), 0) || 1
   );
 
-  const directShock = Array(n).fill(0);
+  const directVec = Array(n).fill(0);
   for (const item of state.shockItems) {
     if (item.key === state.currentDatasetKey && item.sectorIdx < n) {
-      directShock[item.sectorIdx] += item.amount;
+      directVec[item.sectorIdx] += item.amount;
     }
   }
 
-  const totalDirect = directShock.reduce((a, b) => a + b, 0);
+  const totalDirect = directVec.reduce((a, b) => a + b, 0);
 
-  const items = sheet.sectors.map((sec, i) => {
-    const indirect = directShock.reduce((acc, shockVal, j) => {
-      const aIj = (sheet.matrix[i]?.[j] || 0) / colTotals[j];
+  const items = sectors.map((sec, i) => {
+    const indirect = directVec.reduce((acc, shockVal, j) => {
+      const aIj = (matrix[i]?.[j] || 0) / colTotals[j];
       return acc + shockVal * aIj;
     }, 0);
-    const totalImpact = directShock[i] + indirect;
-    return { name: sec.name, indirect, totalImpact };
+    const totalImpact = directVec[i] + indirect;
+    return {
+      name: sec.name,
+      direct: directVec[i],
+      indirect,
+      totalImpact
+    };
   });
 
   const sumIndirect = items.reduce((a, x) => a + x.indirect, 0);
@@ -334,11 +413,11 @@ function runSimulation() {
 
   kpiEl.innerHTML = `
     <div class="kpi">
-      <div class="k-lbl">직접 최종수요 증가 합계</div>
+      <div class="k-lbl">직접 수요 증가 합계</div>
       <div class="k-val">${totalDirect.toLocaleString("ko-KR")} 백만원</div>
     </div>
     <div class="kpi">
-      <div class="k-lbl">중간투입 간접유발 합계</div>
+      <div class="k-lbl">중간투입 간접 파급 합계</div>
       <div class="k-val">${sumIndirect.toLocaleString("ko-KR", { maximumFractionDigits: 1 })} 백만원</div>
     </div>
     <div class="kpi">
@@ -354,6 +433,7 @@ function runSimulation() {
       <tr>
         <td>${idx + 1}</td>
         <td>${m.name}</td>
+        <td class="num">${m.direct.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
         <td class="num">${m.indirect.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
         <td class="num">${m.totalImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
       </tr>
@@ -362,20 +442,23 @@ function runSimulation() {
     .join("");
 }
 
-function populateChainSectors() {
+function populateChainDropdown() {
   const key = document.getElementById("chain-dataset").value || state.currentDatasetKey;
   const ds = state.workbooks[key];
   const sel = document.getElementById("chain-sector");
   sel.innerHTML = "";
   if (!ds) return;
-  const sheet = Object.values(ds.sheets)[0];
+
+  const sheet = ds.sheets[ds.sheetNames[0]];
   if (!sheet) return;
+
   sheet.sectors.forEach((sec, idx) => {
     const opt = document.createElement("option");
     opt.value = String(idx);
     opt.textContent = `[${sec.code}] ${sec.name}`;
     sel.appendChild(opt);
   });
+
   runChainAnalysis();
 }
 
@@ -391,7 +474,7 @@ function runChainAnalysis() {
     return;
   }
 
-  const sheet = Object.values(ds.sheets)[0];
+  const sheet = ds.sheets[ds.sheetNames[0]];
   if (!sheet || !sheet.sectors.length) return;
 
   const targetIdx = Number(document.getElementById("chain-sector").value || 0);
@@ -401,20 +484,23 @@ function runChainAnalysis() {
     sheet.matrix.reduce((a, r) => a + Math.max(0, r[c] || 0), 0) || 1
   );
 
-  const rows = sheet.sectors.map((sec, idx) => {
-    const aIj = (sheet.matrix[idx]?.[targetIdx] || 0) / colTotals[targetIdx];
-    const bIj = (sheet.matrix[targetIdx]?.[idx] || 0) / rowTotals[targetIdx];
-    return { name: sec.name, aIj, bIj, linkSum: aIj + bIj };
-  });
+  // 전체 부문의 후방/전방 계수합 평균(영향력계수·감응도계수 산출용)
+  const allBackwardSums = Array.from({ length: n }, (_, j) =>
+    Array.from({ length: n }, (_, i) => (sheet.matrix[i]?.[j] || 0) / colTotals[j]).reduce((a, b) => a + b, 0)
+  );
+  const allForwardSums = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (_, j) => (sheet.matrix[i]?.[j] || 0) / rowTotals[i]).reduce((a, b) => a + b, 0)
+  );
 
-  const backwardSum = rows.reduce((a, r) => a + r.aIj, 0);
-  const forwardSum = rows.reduce((a, r) => a + r.bIj, 0);
+  const avgBackward = allBackwardSums.reduce((a, b) => a + b, 0) / (n || 1) || 1;
+  const avgForward = allForwardSums.reduce((a, b) => a + b, 0) / (n || 1) || 1;
+
+  const backwardSum = allBackwardSums[targetIdx] || 0;
+  const forwardSum = allForwardSums[targetIdx] || 0;
+  const powerIdx = backwardSum / avgBackward;
+  const sensIdx = forwardSum / avgForward;
 
   kpiEl.innerHTML = `
-    <div class="kpi">
-      <div class="k-lbl">선택 기준 산업</div>
-      <div class="k-val" style="font-size:15px;">${sheet.sectors[targetIdx]?.name || ""}</div>
-    </div>
     <div class="kpi">
       <div class="k-lbl">후방연쇄 계수합 (투입계수)</div>
       <div class="k-val">${backwardSum.toFixed(4)}</div>
@@ -423,7 +509,26 @@ function runChainAnalysis() {
       <div class="k-lbl">전방연쇄 계수합 (산출계수)</div>
       <div class="k-val">${forwardSum.toFixed(4)}</div>
     </div>
+    <div class="kpi">
+      <div class="k-lbl">영향력계수 (후방 상대지수)</div>
+      <div class="k-val">${powerIdx.toFixed(3)}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-lbl">감응도계수 (전방 상대지수)</div>
+      <div class="k-val">${sensIdx.toFixed(3)}</div>
+    </div>
   `;
+
+  const rows = sheet.sectors.map((sec, idx) => {
+    const aIj = (sheet.matrix[idx]?.[targetIdx] || 0) / colTotals[targetIdx];
+    const bIj = (sheet.matrix[targetIdx]?.[idx] || 0) / rowTotals[targetIdx];
+    return {
+      name: sec.name,
+      aIj,
+      bIj,
+      linkSum: aIj + bIj
+    };
+  });
 
   const top = [...rows].sort((a, b) => b.linkSum - a.linkSum).slice(0, 20);
   tbody.innerHTML = top
@@ -441,20 +546,23 @@ function runChainAnalysis() {
     .join("");
 }
 
-function populateShockSectors() {
+function populateShockDropdown() {
   const key = document.getElementById("shock-dataset").value || state.currentDatasetKey;
   const ds = state.workbooks[key];
   const sel = document.getElementById("shock-sector");
   sel.innerHTML = "";
   if (!ds) return;
-  const sheet = Object.values(ds.sheets)[0];
+
+  const sheet = ds.sheets[ds.sheetNames[0]];
   if (!sheet) return;
+
   sheet.sectors.forEach((sec, idx) => {
     const opt = document.createElement("option");
     opt.value = String(idx);
     opt.textContent = `[${sec.code}] ${sec.name}`;
     sel.appendChild(opt);
   });
+
   runShockSimulation();
 }
 
@@ -470,7 +578,7 @@ function runShockSimulation() {
     return;
   }
 
-  const sheet = Object.values(ds.sheets)[0];
+  const sheet = ds.sheets[ds.sheetNames[0]];
   if (!sheet || !sheet.sectors.length) return;
 
   const targetIdx = Number(document.getElementById("shock-sector").value || 0);
@@ -489,7 +597,13 @@ function runShockSimulation() {
     const bIj = (sheet.matrix[targetIdx]?.[idx] || 0) / rowTotals[targetIdx];
     const dImpact = baseScale * dRate * aIj;
     const sImpact = baseScale * sRate * bIj;
-    return { name: sec.name, dImpact, sImpact, total: dImpact + sImpact, absScore: Math.abs(dImpact) + Math.abs(sImpact) };
+    return {
+      name: sec.name,
+      dImpact,
+      sImpact,
+      total: dImpact + sImpact,
+      absScore: Math.abs(dImpact) + Math.abs(sImpact)
+    };
   });
 
   const sumDemand = rows.reduce((a, r) => a + r.dImpact, 0);
@@ -526,7 +640,26 @@ function runShockSimulation() {
     .join("");
 }
 
-async function loadDataset(fileObj) {
+function downloadTableCSV(tableId, fileName) {
+  const table = document.getElementById(tableId);
+  if (!table) return;
+  const rows = [...table.querySelectorAll("tr")].map((tr) =>
+    [...tr.querySelectorAll("th, td")].map((cell) => {
+      const txt = cell.textContent.trim().replace(/"/g, '""');
+      return `"${txt}"`;
+    })
+  );
+  const csv = "\uFEFF" + rows.map((r) => r.join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadOneFile(fileObj) {
   const url = encodeURI(`./data/${fileObj.name}`);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -540,41 +673,41 @@ async function loadDataset(fileObj) {
 
   state.workbooks[fileObj.key] = {
     label: fileObj.label,
-    wb,
+    sheetNames: wb.SheetNames,
     sheets
   };
 }
 
-async function autoLoadAll(focusKey = "basic") {
+async function autoLoadAll(preferredKey = "basic") {
   for (const f of FILES) {
     try {
-      await loadDataset(f);
+      await loadOneFile(f);
     } catch (_) {
       // 개별 파일 실패 시 상태 표시만 갱신
     }
     renderAutoStatus();
   }
 
-  if (state.workbooks[focusKey]) {
-    state.currentDatasetKey = focusKey;
+  if (state.workbooks[preferredKey]) {
+    state.currentDatasetKey = preferredKey;
   } else {
-    const firstAvailable = FILES.find((f) => state.workbooks[f.key]);
-    if (firstAvailable) state.currentDatasetKey = firstAvailable.key;
+    const first = FILES.find((f) => state.workbooks[f.key]);
+    if (first) state.currentDatasetKey = first.key;
   }
 
-  populateDatasetSelects();
-  initSheetSelect();
+  syncDatasetDropdowns();
+  populateSheetDropdown();
   runSimulation();
 }
 
 document.getElementById("btn-load-basic").addEventListener("click", async () => {
-  const basicFile = FILES.find((f) => f.key === "basic");
+  const basic = FILES.find((f) => f.key === "basic");
   try {
-    await loadDataset(basicFile);
+    await loadOneFile(basic);
     state.currentDatasetKey = "basic";
     renderAutoStatus();
-    populateDatasetSelects();
-    initSheetSelect();
+    syncDatasetDropdowns();
+    populateSheetDropdown();
     runSimulation();
   } catch (e) {
     alert(`기본부문 불러오기 실패: ${e.message}`);
@@ -582,18 +715,21 @@ document.getElementById("btn-load-basic").addEventListener("click", async () => 
 });
 
 document.getElementById("btn-reload-all").addEventListener("click", () => autoLoadAll(state.currentDatasetKey));
+
 document.getElementById("dataset-select").addEventListener("change", (e) => {
   state.currentDatasetKey = e.target.value;
   document.getElementById("chain-dataset").value = e.target.value;
   document.getElementById("shock-dataset").value = e.target.value;
-  initSheetSelect();
+  populateSheetDropdown();
   runSimulation();
 });
-document.getElementById("sheet-select").addEventListener("change", populateRowSelect);
-document.getElementById("row-search").addEventListener("input", populateRowSelect);
-document.getElementById("row-select").addEventListener("change", renderRawConnections);
-document.getElementById("col-search").addEventListener("input", renderRawConnections);
-document.getElementById("sim-search").addEventListener("input", populateSimSectors);
+
+document.getElementById("sheet-select").addEventListener("change", populateRowDropdown);
+document.getElementById("row-search").addEventListener("input", populateRowDropdown);
+document.getElementById("row-select").addEventListener("change", renderRawTable);
+document.getElementById("col-search").addEventListener("input", renderRawTable);
+
+document.getElementById("sim-search").addEventListener("input", populateSimDropdown);
 document.getElementById("btn-add-shock").addEventListener("click", addShockItem);
 document.getElementById("btn-run-sim").addEventListener("click", runSimulation);
 document.getElementById("btn-clear-shock").addEventListener("click", () => {
@@ -601,11 +737,17 @@ document.getElementById("btn-clear-shock").addEventListener("click", () => {
   renderBasket();
   runSimulation();
 });
-document.getElementById("chain-dataset").addEventListener("change", populateChainSectors);
+
+document.getElementById("chain-dataset").addEventListener("change", populateChainDropdown);
 document.getElementById("chain-sector").addEventListener("change", runChainAnalysis);
 document.getElementById("btn-run-chain").addEventListener("click", runChainAnalysis);
-document.getElementById("shock-dataset").addEventListener("change", populateShockSectors);
+
+document.getElementById("shock-dataset").addEventListener("change", populateShockDropdown);
 document.getElementById("shock-sector").addEventListener("change", runShockSimulation);
 document.getElementById("btn-run-shock").addEventListener("click", runShockSimulation);
+
+document.getElementById("btn-csv-sim").addEventListener("click", () => downloadTableCSV("sim-table", "최종수요_파급효과.csv"));
+document.getElementById("btn-csv-chain").addEventListener("click", () => downloadTableCSV("chain-table", "전후방_연쇄효과.csv"));
+document.getElementById("btn-csv-shock").addEventListener("click", () => downloadTableCSV("shock-table", "공급수요_충격파급.csv"));
 
 window.addEventListener("DOMContentLoaded", () => autoLoadAll("basic"));
