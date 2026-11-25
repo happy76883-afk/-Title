@@ -3,17 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>산업연관표(I-O) 자동 분석 웹앱</title>
+  <title>산업연관표 분석 웹앱</title>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <style>
     :root {
-      --bg: #f5f7fa;
+      --bg: #f3f6fa;
       --card: #ffffff;
       --text: #18202c;
-      --muted: #5b6776;
-      --line: #dde4ee;
-      --primary: #1b4d7e;
-      --primary-soft: #eaf2f9;
+      --muted: #5c6878;
+      --line: #dce3ec;
+      --navy: #12457a;
+      --teal: #115e67;
+      --soft: #eef4fa;
       --ok: #157347;
       --err: #b42318;
     }
@@ -25,17 +26,17 @@
       color: var(--text);
       line-height: 1.5;
     }
-    header {
-      background: var(--primary);
+    .topbar {
+      background: var(--navy);
       color: #fff;
-      padding: 20px 24px;
+      padding: 14px 20px;
+      font-weight: 700;
+      font-size: 16px;
     }
-    header h1 { margin: 0 0 4px; font-size: 20px; }
-    header p { margin: 0; font-size: 13px; opacity: 0.92; }
-    main {
-      max-width: 1160px;
-      margin: 22px auto;
-      padding: 0 16px 48px;
+    .container {
+      max-width: 1120px;
+      margin: 20px auto;
+      padding: 0 16px 56px;
       display: grid;
       gap: 18px;
     }
@@ -43,138 +44,175 @@
       background: var(--card);
       border: 1px solid var(--line);
       border-radius: 10px;
-      padding: 18px 20px;
+      padding: 20px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
     }
-    .card h2 { margin: 0 0 12px; font-size: 16px; }
-    .status-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-      gap: 10px;
-    }
-    .status-card {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 10px 12px;
-      background: #fafbfd;
-      font-size: 13px;
-    }
-    .status-card strong { display: block; margin-bottom: 2px; }
-    .status-card .fname { font-size: 12px; color: var(--muted); word-break: break-all; }
-    .ok { color: var(--ok); font-weight: 700; }
-    .err { color: var(--err); font-weight: 700; }
-    .controls {
+    .card-head {
       display: flex;
       flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
       gap: 12px;
-      align-items: end;
+      margin-bottom: 10px;
     }
-    label {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-      font-size: 13px;
-      font-weight: 600;
+    .card-head h2 {
+      margin: 0;
+      font-size: 20px;
     }
-    select, input, button {
+    .desc {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .btn {
       height: 38px;
-      border-radius: 7px;
-      border: 1px solid #c5d0de;
-      padding: 0 10px;
+      padding: 0 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      color: #fff;
+      background: var(--navy);
+    }
+    .btn-teal { background: var(--teal); }
+    .btn-sec { background: #475569; }
+    .btn:hover { opacity: 0.92; }
+    .field {
+      margin-bottom: 14px;
+    }
+    .field label {
+      display: block;
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .field input, .field select {
+      width: 100%;
+      height: 40px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 0 12px;
       font-size: 14px;
       background: #fff;
       color: var(--text);
     }
-    button {
-      background: var(--primary);
-      color: #fff;
-      border: none;
-      padding: 0 16px;
-      font-weight: 600;
-      cursor: pointer;
+    .hint {
+      font-size: 12.5px;
+      color: var(--muted);
+      margin-top: 5px;
     }
-    button:hover { opacity: 0.92; }
+    .auto-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 12.5px;
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+    .ok { color: var(--ok); font-weight: 700; }
+    .err { color: var(--err); font-weight: 700; }
+    .basket {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fafbfd;
+      margin-top: 12px;
+    }
+    .basket-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 8px;
+      border-bottom: 1px dashed var(--line);
+      font-size: 13.5px;
+    }
+    .basket-item:last-child { border-bottom: none; }
+    .del-btn {
+      background: #fee2e2;
+      color: #991b1b;
+      border: none;
+      border-radius: 4px;
+      padding: 3px 8px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
     .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
       gap: 12px;
       margin-top: 14px;
     }
     .kpi {
-      background: var(--primary-soft);
+      background: var(--soft);
       border-radius: 8px;
-      padding: 14px;
+      padding: 12px 14px;
     }
-    .kpi .label { font-size: 12px; color: var(--muted); }
-    .kpi .val { font-size: 19px; font-weight: 700; margin-top: 4px; }
+    .kpi .k-lbl { font-size: 12px; color: var(--muted); }
+    .kpi .k-val { font-size: 18px; font-weight: 700; margin-top: 3px; }
     .table-wrap { overflow-x: auto; margin-top: 12px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { border-bottom: 1px solid var(--line); padding: 8px 10px; text-align: left; white-space: nowrap; }
-    th { background: #f2f5f9; font-weight: 700; }
+    th { background: #f1f5f9; font-weight: 700; }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-    pre.log {
-      background: #0f172a;
-      color: #e2e8f0;
-      padding: 12px;
-      border-radius: 8px;
-      font-size: 12px;
-      max-height: 200px;
-      overflow: auto;
-      margin: 0;
+    .two-col {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>산업연관표(I-O) 자동 분석 웹앱</h1>
-    <p>페이지 접속 시 <code>data/</code> 폴더의 기본·통합대·통합중·통합소분류 엑셀을 자동으로 읽습니다.</p>
-  </header>
+  <div class="topbar">과제물1: 산업연관표 분석 웹앱</div>
 
-  <main>
+  <div class="container">
+    <!-- 1. 원자료 탐색 -->
     <section class="card">
-      <h2>1. 자동 로드 상태 (<code>data/</code>)</h2>
-      <div id="status-grid" class="status-grid"></div>
-      <div style="margin-top: 12px;">
-        <button id="reload-btn" type="button">자동 재로드</button>
+      <div class="card-head">
+        <h2>1. 원자료 탐색</h2>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button id="btn-load-basic" class="btn btn-teal" type="button">기본부문 불러오기</button>
+          <button id="btn-reload-all" class="btn btn-sec" type="button">4개 전체 재로드</button>
+        </div>
       </div>
-    </section>
+      <p class="desc">
+        선택한 행이 각 열과 어떻게 연결되는지 확인합니다. 산업 행뿐 아니라 원표의 합계·분석지표 행도 포함됩니다.
+      </p>
 
-    <section class="card">
-      <h2>2. 부문 선택 및 파급효과</h2>
-      <div class="controls">
-        <label>
-          분류 선택
-          <select id="level-select"></select>
-        </label>
-        <label>
-          대상 부문 선택
-          <select id="sector-select"></select>
-        </label>
-        <label>
-          수요 충격 (%)
-          <input id="demand-shock" type="number" step="1" value="10" style="width: 110px;" />
-        </label>
-        <label>
-          공급 충격 (%)
-          <input id="supply-shock" type="number" step="1" value="5" style="width: 110px;" />
-        </label>
-        <button id="calc-btn" type="button">분석 실행</button>
+      <div id="auto-status" class="auto-bar">data/ 폴더 파일 자동 로딩 중...</div>
+
+      <div class="field">
+        <label for="sheet-select">시트</label>
+        <select id="sheet-select"></select>
+        <div class="hint">기본 자료를 불러온 후 표시됩니다.</div>
       </div>
 
-      <div id="kpi-grid" class="kpi-grid"></div>
-    </section>
+      <div class="field">
+        <label for="row-search">행 이름 검색</label>
+        <input id="row-search" type="text" placeholder="예: 자동차, 부가가치" />
+      </div>
 
-    <section class="card">
-      <h2>3. 연쇄효과 및 충격 파급 순위</h2>
+      <div class="field">
+        <label for="row-select">행 선택</label>
+        <select id="row-select"></select>
+      </div>
+
+      <div class="field">
+        <label for="col-search">열 검색</label>
+        <input id="col-search" type="text" placeholder="열 이름 또는 코드" />
+      </div>
+
       <div class="table-wrap">
-        <table id="result-table">
+        <table id="raw-table">
           <thead>
             <tr>
-              <th>순위</th>
-              <th>부문명</th>
-              <th class="num">투입계수 (a_ij)</th>
-              <th class="num">산출계수 (b_ij)</th>
-              <th class="num">수요충격 파급</th>
-              <th class="num">공급충격 파급</th>
+              <th>열 코드/순번</th>
+              <th>열 이름</th>
+              <th class="num">값</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -182,13 +220,66 @@
       </div>
     </section>
 
+    <!-- 2. 국내 생산물 최종수요 증가 시뮬레이션 -->
     <section class="card">
-      <h2>4. 자동 파싱 로그</h2>
-      <pre id="log-box" class="log"></pre>
+      <h2>2. 국내 생산물 최종수요 증가 시뮬레이션</h2>
+      <p class="desc">
+        수입 완제품 구매를 제외한 국내 생산물 최종수요 증가를 입력하세요. 여러 산업의 증가액은 합산됩니다.
+      </p>
+
+      <div class="field">
+        <label for="sim-search">산업 검색</label>
+        <input id="sim-search" type="text" placeholder="산업 이름 또는 코드" />
+      </div>
+
+      <div class="field">
+        <label for="sim-sector">산업</label>
+        <select id="sim-sector"></select>
+      </div>
+
+      <div class="two-col">
+        <div class="field">
+          <label for="sim-amount">증가액 (백만원)</label>
+          <input id="sim-amount" type="number" step="100" value="1000" />
+          <div class="hint">1,000백만원 = 10억원. 이번 버전은 양의 수요 증가만 지원합니다.</div>
+        </div>
+        <div class="field">
+          <label for="sim-supply-pct">공급충격률 (%) — 추가 기능</label>
+          <input id="sim-supply-pct" type="number" step="1" value="0" />
+          <div class="hint">0이면 수요파급만 계산, 양수 입력 시 공급파급도 함께 산출합니다.</div>
+        </div>
+      </div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button id="btn-add-shock" class="btn btn-teal" type="button">시뮬레이션에 추가</button>
+        <button id="btn-run-sim" class="btn" type="button">합산 파급효과 계산</button>
+        <button id="btn-clear-shock" class="btn btn-sec" type="button">목록 비우기</button>
+      </div>
+
+      <div id="shock-basket" class="basket">
+        <div style="font-size:13px; color:var(--muted);">추가된 산업 수요 증가 목록이 여기에 표시됩니다.</div>
+      </div>
+
+      <div id="sim-kpi" class="kpi-grid"></div>
+
+      <div class="table-wrap">
+        <table id="sim-table">
+          <thead>
+            <tr>
+              <th>순위</th>
+              <th>산업명</th>
+              <th class="num">수요유발 파급(백만원)</th>
+              <th class="num">후방연쇄 계수합</th>
+              <th class="num">전방연쇄 계수합</th>
+              <th class="num">공급충격 파급(백만원)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
-  </main>
+  </div>
 
   <script src="app.js"></script>
 </body>
 </html>
-   
