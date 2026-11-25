@@ -6,9 +6,9 @@ const FILES = [
 ];
 
 const state = {
-  workbooks: {}, // key -> { label, wb, sheets: { sheetName: { headers, rows, sectors } } }
+  workbooks: {},
   currentDatasetKey: "basic",
-  shockItems: [] // { key, datasetLabel, sectorIdx, sectorName, amount }
+  shockItems: []
 };
 
 function toNum(v) {
@@ -20,13 +20,19 @@ function toNum(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function isNumericToken(rawVal) {
+  if (typeof rawVal === "number") return Number.isFinite(rawVal);
+  if (rawVal == null) return false;
+  const cleaned = String(rawVal).replace(/,/g, "").trim();
+  return /^-?\d+(\.\d+)?$/.test(cleaned);
+}
+
 function parseSheetData(ws) {
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
   if (!Array.isArray(raw) || raw.length === 0) {
     return { headers: [], allRows: [], sectors: [], matrix: [] };
   }
 
-  // 숫자 셀이 가장 많이 등장하는 행을 헤더 행으로 추정
   let headerRowIdx = 0;
   let bestScore = -1;
   for (let r = 0; r < Math.min(raw.length, 15); r++) {
@@ -46,13 +52,11 @@ function parseSheetData(ws) {
     return h || `열 ${c + 1}`;
   });
 
-  // 행 이름(문자열)이 있는 모든 행(산업 행 + 합계/부가가치/지표 행 포함) 수집
   const allRows = [];
   for (let r = headerRowIdx + 1; r < raw.length; r++) {
     const row = raw[r];
     if (!Array.isArray(row)) continue;
 
-    // 앞쪽 열(0~3)에서 행 이름 후보 찾기
     let nameIdx = -1;
     let rowName = "";
     for (let c = 0; c < Math.min(4, maxCols); c++) {
@@ -82,9 +86,8 @@ function parseSheetData(ws) {
     });
   }
 
-  // 시뮬레이션용 산업 행렬 추출(숫자 열이 3개 이상인 행들)
   const numericRows = allRows.filter(
-    (item) => item.values.filter((v) => typeof v.rawVal === "number" || /^-?\d[\d,.]*$/.test(String(v.rawVal).replace(/,/g, "").trim())).length >= 3
+    (item) => item.values.filter((v) => isNumericToken(v.rawVal)).length >= 3
   );
 
   const n = numericRows.length;
@@ -108,9 +111,32 @@ function renderAutoStatus() {
   const bar = document.getElementById("auto-status");
   const parts = FILES.map((f) => {
     const loaded = !!state.workbooks[f.key];
-    return `${f.label}: <span class="${loaded ? "ok" : "err"}">${loaded ? "완료" : "미로드"}</span>`;
+    return `${f.label}: <span class="${loaded ? "ok" : "err"}">${loaded ? "자동 로드 완료" : "미로드"}</span>`;
   });
   bar.innerHTML = parts.join(" &nbsp;|&nbsp; ");
+}
+
+function populateDatasetSelects() {
+  const selects = [
+    document.getElementById("dataset-select"),
+    document.getElementById("chain-dataset"),
+    document.getElementById("shock-dataset")
+  ];
+
+  const available = FILES.filter((f) => state.workbooks[f.key]);
+  for (const sel of selects) {
+    sel.innerHTML = "";
+    for (const f of available) {
+      const cnt = Object.values(state.workbooks[f.key].sheets)[0]?.sectors.length || 0;
+      const opt = document.createElement("option");
+      opt.value = f.key;
+      opt.textContent = `${f.label} (${cnt}개 부문)`;
+      sel.appendChild(opt);
+    }
+    if (state.workbooks[state.currentDatasetKey]) {
+      sel.value = state.currentDatasetKey;
+    }
+  }
 }
 
 function initSheetSelect(preferredSheetName = null) {
@@ -133,6 +159,8 @@ function initSheetSelect(preferredSheetName = null) {
 
   populateRowSelect();
   populateSimSectors();
+  populateChainSectors();
+  populateShockSectors();
 }
 
 function populateRowSelect() {
@@ -231,7 +259,7 @@ function renderBasket() {
     `
       )
       .join("") +
-    `<div style="margin-top:8px; font-weight:700; font-size:13.5px;">총 추가 수요 증가액: ${total.toLocaleString("ko-KR")} 백만원 (${(total / 100).toLocaleString("ko-KR")} 억원)</div>`;
+    `<div style="margin-top:8px; font-weight:700; font-size:13.5px;">합산 수요 증가액: ${total.toLocaleString("ko-KR")} 백만원 (${(total / 100).toLocaleString("ko-KR")} 억원)</div>`;
 
   box.querySelectorAll("[data-del]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -268,7 +296,6 @@ function runSimulation() {
   const ds = state.workbooks[state.currentDatasetKey];
   const kpiEl = document.getElementById("sim-kpi");
   const tbody = document.querySelector("#sim-table tbody");
-  const supplyPct = toNum(document.getElementById("sim-supply-pct").value);
 
   if (!ds) {
     kpiEl.innerHTML = "";
@@ -280,12 +307,10 @@ function runSimulation() {
   if (!sheet || !sheet.sectors.length) return;
 
   const n = sheet.sectors.length;
-  const rowTotals = sheet.matrix.map((r) => r.reduce((a, b) => a + Math.max(0, b), 0) || 1);
   const colTotals = Array.from({ length: n }, (_, c) =>
     sheet.matrix.reduce((a, r) => a + Math.max(0, r[c] || 0), 0) || 1
   );
 
-  // 선택된 여러 산업의 수요 증가액을 합산
   const directShock = Array(n).fill(0);
   for (const item of state.shockItems) {
     if (item.key === state.currentDatasetKey && item.sectorIdx < n) {
@@ -293,68 +318,208 @@ function runSimulation() {
     }
   }
 
-  const totalInputShock = directShock.reduce((a, b) => a + b, 0);
+  const totalDirect = directShock.reduce((a, b) => a + b, 0);
 
-  const sectorMetrics = sheet.sectors.map((sec, i) => {
-    const backwardSum = Array.from({ length: n }, (_, r) => (sheet.matrix[r]?.[i] || 0) / colTotals[i]).reduce(
-      (a, b) => a + b,
-      0
-    );
-    const forwardSum = Array.from({ length: n }, (_, c) => (sheet.matrix[i]?.[c] || 0) / rowTotals[i]).reduce(
-      (a, b) => a + b,
-      0
-    );
-
-    // 직접 충격 + 투입계수 기반 간접 파급 근사
-    const indirectDemand = directShock.reduce((acc, shockVal, j) => {
+  const items = sheet.sectors.map((sec, i) => {
+    const indirect = directShock.reduce((acc, shockVal, j) => {
       const aIj = (sheet.matrix[i]?.[j] || 0) / colTotals[j];
       return acc + shockVal * aIj;
     }, 0);
-
-    const demandImpact = directShock[i] + indirectDemand;
-    const supplyImpact = totalInputShock * (supplyPct / 100) * forwardSum;
-
-    return {
-      name: sec.name,
-      demandImpact,
-      backwardSum,
-      forwardSum,
-      supplyImpact
-    };
+    const totalImpact = directShock[i] + indirect;
+    return { name: sec.name, indirect, totalImpact };
   });
 
-  const totalDemandImpact = sectorMetrics.reduce((a, m) => a + m.demandImpact, 0);
-  const totalSupplyImpact = sectorMetrics.reduce((a, m) => a + m.supplyImpact, 0);
+  const sumIndirect = items.reduce((a, x) => a + x.indirect, 0);
+  const sumTotal = items.reduce((a, x) => a + x.totalImpact, 0);
 
   kpiEl.innerHTML = `
     <div class="kpi">
-      <div class="k-lbl">합산 수요 증가액</div>
-      <div class="k-val">${totalInputShock.toLocaleString("ko-KR")} 백만원</div>
+      <div class="k-lbl">직접 최종수요 증가 합계</div>
+      <div class="k-val">${totalDirect.toLocaleString("ko-KR")} 백만원</div>
     </div>
     <div class="kpi">
-      <div class="k-lbl">총 수요유발 파급(추정)</div>
-      <div class="k-val">${totalDemandImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })} 백만원</div>
+      <div class="k-lbl">중간투입 간접유발 합계</div>
+      <div class="k-val">${sumIndirect.toLocaleString("ko-KR", { maximumFractionDigits: 1 })} 백만원</div>
     </div>
     <div class="kpi">
-      <div class="k-lbl">총 공급충격 파급(추정)</div>
-      <div class="k-val">${totalSupplyImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })} 백만원</div>
+      <div class="k-lbl">총 수요유발 파급합</div>
+      <div class="k-val">${sumTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })} 백만원</div>
     </div>
   `;
 
-  const ranked = [...sectorMetrics]
-    .sort((a, b) => Math.abs(b.demandImpact) + Math.abs(b.supplyImpact) - (Math.abs(a.demandImpact) + Math.abs(a.supplyImpact)))
-    .slice(0, 25);
-
+  const ranked = [...items].sort((a, b) => b.totalImpact - a.totalImpact).slice(0, 25);
   tbody.innerHTML = ranked
     .map(
       (m, idx) => `
       <tr>
         <td>${idx + 1}</td>
         <td>${m.name}</td>
-        <td class="num">${m.demandImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
-        <td class="num">${m.backwardSum.toFixed(4)}</td>
-        <td class="num">${m.forwardSum.toFixed(4)}</td>
-        <td class="num">${m.supplyImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td class="num">${m.indirect.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td class="num">${m.totalImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+      </tr>
+    `
+    )
+    .join("");
+}
+
+function populateChainSectors() {
+  const key = document.getElementById("chain-dataset").value || state.currentDatasetKey;
+  const ds = state.workbooks[key];
+  const sel = document.getElementById("chain-sector");
+  sel.innerHTML = "";
+  if (!ds) return;
+  const sheet = Object.values(ds.sheets)[0];
+  if (!sheet) return;
+  sheet.sectors.forEach((sec, idx) => {
+    const opt = document.createElement("option");
+    opt.value = String(idx);
+    opt.textContent = `[${sec.code}] ${sec.name}`;
+    sel.appendChild(opt);
+  });
+  runChainAnalysis();
+}
+
+function runChainAnalysis() {
+  const key = document.getElementById("chain-dataset").value || state.currentDatasetKey;
+  const ds = state.workbooks[key];
+  const kpiEl = document.getElementById("chain-kpi");
+  const tbody = document.querySelector("#chain-table tbody");
+
+  if (!ds) {
+    kpiEl.innerHTML = "";
+    tbody.innerHTML = "";
+    return;
+  }
+
+  const sheet = Object.values(ds.sheets)[0];
+  if (!sheet || !sheet.sectors.length) return;
+
+  const targetIdx = Number(document.getElementById("chain-sector").value || 0);
+  const n = sheet.sectors.length;
+  const rowTotals = sheet.matrix.map((r) => r.reduce((a, b) => a + Math.max(0, b), 0) || 1);
+  const colTotals = Array.from({ length: n }, (_, c) =>
+    sheet.matrix.reduce((a, r) => a + Math.max(0, r[c] || 0), 0) || 1
+  );
+
+  const rows = sheet.sectors.map((sec, idx) => {
+    const aIj = (sheet.matrix[idx]?.[targetIdx] || 0) / colTotals[targetIdx];
+    const bIj = (sheet.matrix[targetIdx]?.[idx] || 0) / rowTotals[targetIdx];
+    return { name: sec.name, aIj, bIj, linkSum: aIj + bIj };
+  });
+
+  const backwardSum = rows.reduce((a, r) => a + r.aIj, 0);
+  const forwardSum = rows.reduce((a, r) => a + r.bIj, 0);
+
+  kpiEl.innerHTML = `
+    <div class="kpi">
+      <div class="k-lbl">선택 기준 산업</div>
+      <div class="k-val" style="font-size:15px;">${sheet.sectors[targetIdx]?.name || ""}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-lbl">후방연쇄 계수합 (투입계수)</div>
+      <div class="k-val">${backwardSum.toFixed(4)}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-lbl">전방연쇄 계수합 (산출계수)</div>
+      <div class="k-val">${forwardSum.toFixed(4)}</div>
+    </div>
+  `;
+
+  const top = [...rows].sort((a, b) => b.linkSum - a.linkSum).slice(0, 20);
+  tbody.innerHTML = top
+    .map(
+      (r, idx) => `
+      <tr>
+        <td>${idx + 1}</td>
+        <td>${r.name}</td>
+        <td class="num">${r.aIj.toFixed(4)}</td>
+        <td class="num">${r.bIj.toFixed(4)}</td>
+        <td class="num">${r.linkSum.toFixed(4)}</td>
+      </tr>
+    `
+    )
+    .join("");
+}
+
+function populateShockSectors() {
+  const key = document.getElementById("shock-dataset").value || state.currentDatasetKey;
+  const ds = state.workbooks[key];
+  const sel = document.getElementById("shock-sector");
+  sel.innerHTML = "";
+  if (!ds) return;
+  const sheet = Object.values(ds.sheets)[0];
+  if (!sheet) return;
+  sheet.sectors.forEach((sec, idx) => {
+    const opt = document.createElement("option");
+    opt.value = String(idx);
+    opt.textContent = `[${sec.code}] ${sec.name}`;
+    sel.appendChild(opt);
+  });
+  runShockSimulation();
+}
+
+function runShockSimulation() {
+  const key = document.getElementById("shock-dataset").value || state.currentDatasetKey;
+  const ds = state.workbooks[key];
+  const kpiEl = document.getElementById("shock-kpi");
+  const tbody = document.querySelector("#shock-table tbody");
+
+  if (!ds) {
+    kpiEl.innerHTML = "";
+    tbody.innerHTML = "";
+    return;
+  }
+
+  const sheet = Object.values(ds.sheets)[0];
+  if (!sheet || !sheet.sectors.length) return;
+
+  const targetIdx = Number(document.getElementById("shock-sector").value || 0);
+  const dRate = toNum(document.getElementById("demand-shock-rate").value) / 100;
+  const sRate = toNum(document.getElementById("supply-shock-rate").value) / 100;
+
+  const n = sheet.sectors.length;
+  const rowTotals = sheet.matrix.map((r) => r.reduce((a, b) => a + Math.max(0, b), 0) || 1);
+  const colTotals = Array.from({ length: n }, (_, c) =>
+    sheet.matrix.reduce((a, r) => a + Math.max(0, r[c] || 0), 0) || 1
+  );
+
+  const baseScale = rowTotals[targetIdx] || 1;
+  const rows = sheet.sectors.map((sec, idx) => {
+    const aIj = (sheet.matrix[idx]?.[targetIdx] || 0) / colTotals[targetIdx];
+    const bIj = (sheet.matrix[targetIdx]?.[idx] || 0) / rowTotals[targetIdx];
+    const dImpact = baseScale * dRate * aIj;
+    const sImpact = baseScale * sRate * bIj;
+    return { name: sec.name, dImpact, sImpact, total: dImpact + sImpact, absScore: Math.abs(dImpact) + Math.abs(sImpact) };
+  });
+
+  const sumDemand = rows.reduce((a, r) => a + r.dImpact, 0);
+  const sumSupply = rows.reduce((a, r) => a + r.sImpact, 0);
+
+  kpiEl.innerHTML = `
+    <div class="kpi">
+      <div class="k-lbl">수요충격 파급 추정합</div>
+      <div class="k-val">${sumDemand.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-lbl">공급충격 파급 추정합</div>
+      <div class="k-val">${sumSupply.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-lbl">합산 충격 파급 추정</div>
+      <div class="k-val">${(sumDemand + sumSupply).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div>
+    </div>
+  `;
+
+  const top = [...rows].sort((a, b) => b.absScore - a.absScore).slice(0, 20);
+  tbody.innerHTML = top
+    .map(
+      (r, idx) => `
+      <tr>
+        <td>${idx + 1}</td>
+        <td>${r.name}</td>
+        <td class="num">${r.dImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td class="num">${r.sImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td class="num">${r.total.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
       </tr>
     `
     )
@@ -397,6 +562,7 @@ async function autoLoadAll(focusKey = "basic") {
     if (firstAvailable) state.currentDatasetKey = firstAvailable.key;
   }
 
+  populateDatasetSelects();
   initSheetSelect();
   runSimulation();
 }
@@ -407,6 +573,7 @@ document.getElementById("btn-load-basic").addEventListener("click", async () => 
     await loadDataset(basicFile);
     state.currentDatasetKey = "basic";
     renderAutoStatus();
+    populateDatasetSelects();
     initSheetSelect();
     runSimulation();
   } catch (e) {
@@ -415,6 +582,13 @@ document.getElementById("btn-load-basic").addEventListener("click", async () => 
 });
 
 document.getElementById("btn-reload-all").addEventListener("click", () => autoLoadAll(state.currentDatasetKey));
+document.getElementById("dataset-select").addEventListener("change", (e) => {
+  state.currentDatasetKey = e.target.value;
+  document.getElementById("chain-dataset").value = e.target.value;
+  document.getElementById("shock-dataset").value = e.target.value;
+  initSheetSelect();
+  runSimulation();
+});
 document.getElementById("sheet-select").addEventListener("change", populateRowSelect);
 document.getElementById("row-search").addEventListener("input", populateRowSelect);
 document.getElementById("row-select").addEventListener("change", renderRawConnections);
@@ -427,5 +601,11 @@ document.getElementById("btn-clear-shock").addEventListener("click", () => {
   renderBasket();
   runSimulation();
 });
+document.getElementById("chain-dataset").addEventListener("change", populateChainSectors);
+document.getElementById("chain-sector").addEventListener("change", runChainAnalysis);
+document.getElementById("btn-run-chain").addEventListener("click", runChainAnalysis);
+document.getElementById("shock-dataset").addEventListener("change", populateShockSectors);
+document.getElementById("shock-sector").addEventListener("change", runShockSimulation);
+document.getElementById("btn-run-shock").addEventListener("click", runShockSimulation);
 
 window.addEventListener("DOMContentLoaded", () => autoLoadAll("basic"));
