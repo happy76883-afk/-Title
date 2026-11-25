@@ -1,100 +1,69 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>과제물1: 산업연관표 분석 웹앱 개발</title>
-  <link rel="stylesheet" href="style.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>2023년 산업연관표 원자료 탐색기</title>
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <header class="top-banner">
-    <h1>과제물1: 산업연관표 분석 웹앱 개발</h1>
+  <header>
+    <p>산업연관표(I-O) 웹 도구 · 1단계</p>
+    <h1>1. 원자료 탐색기</h1>
   </header>
 
-  <main class="page">
-    <section class="panel">
-      <div class="panel-head">
-        <h2>1. 원자료 탐색</h2>
-        <button id="loadBasicBtn" type="button" class="btn-load">기본부문 불러오기</button>
-      </div>
-      <p class="hint">
-        선택한 행이 각 열과 어떻게 연결되는지 확인합니다. 산업 행뿐 아니라 원표의 합계·분석지표 행도 포함됩니다.
-      </p>
+  <main>
+    <div class="loading-status">
+      <div id="status">"기본부문 불러오기" 버튼을 눌러 엑셀 자료를 불러오세요.</div>
+      <button id="load-basic" type="button">기본부문 불러오기</button>
+      <details>
+        <summary>워크북 시트/진단 정보 보기</summary>
+        <pre id="validation"></pre>
+      </details>
+    </div>
 
-      <div id="statusText" class="status-msg">Pyodide 준비 중입니다...</div>
-
-      <div class="field">
-        <label for="sheetSelect">시트</label>
-        <select id="sheetSelect" disabled></select>
+    <section id="explorer">
+      <div class="section-heading">
+        <h2>시트 및 행·열 조회</h2>
       </div>
 
-      <div class="field">
-        <label for="rowSearch">행 이름 검색</label>
-        <input id="rowSearch" type="text" placeholder="예: 자동차, 부가가치" disabled />
+      <div class="controls">
+        <label>
+          시트 선택
+          <select id="sheet" disabled></select>
+        </label>
+        <label>
+          행 검색
+          <input id="row-search" type="search" placeholder="코드 또는 부문명 검색" disabled />
+        </label>
+        <label>
+          행 선택
+          <select id="row" disabled></select>
+        </label>
+        <label>
+          열 필터
+          <input id="col-search" type="search" placeholder="열 코드 또는 명칭 필터" disabled />
+        </label>
       </div>
 
-      <div class="field">
-        <label for="rowSelect">행 선택</label>
-        <select id="rowSelect" disabled></select>
-      </div>
+      <p class="note">단위: <strong id="unit">-</strong></p>
 
-      <div class="field">
-        <label for="colSearch">열 검색</label>
-        <input id="colSearch" type="text" placeholder="열 이름 또는 코드" disabled />
-      </div>
-
-      <p id="emptyMsg" class="empty-msg">기본 자료를 불러온 후 표시됩니다.</p>
-
-      <div id="rawTableWrap" class="table-box" hidden>
+      <div class="scroll">
         <table>
+          <caption id="explore-caption">데이터를 불러오세요.</caption>
           <thead>
             <tr>
               <th>열 코드</th>
-              <th>열 이름</th>
-              <th class="num">원자료 값</th>
+              <th>열 명칭</th>
+              <th>값</th>
             </tr>
           </thead>
-          <tbody id="rawTableBody"></tbody>
+          <tbody id="cells"></tbody>
         </table>
       </div>
-
-      <p class="unit-note">
-        스크롤하여 전체 열을 볼 수 있습니다. 금액표의 일반 데이터 단위는 백만원입니다. 구성비·유발계수 등 요약 행은 행 명칭을 우선 확인하세요.
-      </p>
-    </section>
-
-    <section class="panel">
-      <h2>2. 국내 생산물 최종수요 증가 시뮬레이션</h2>
-      <p class="hint">
-        수입 완제품 구매를 제외한 국내 생산물 최종수요 증가를 입력하세요. 여러 산업의 증가액은 합산됩니다.
-      </p>
-
-      <div class="field">
-        <label for="simSearch">산업 검색</label>
-        <input id="simSearch" type="text" placeholder="산업 이름 또는 코드" disabled />
-      </div>
-
-      <div class="field">
-        <label for="simIndustrySelect">산업</label>
-        <select id="simIndustrySelect" disabled></select>
-      </div>
-
-      <div class="field">
-        <label for="simAmount">증가액 (백만원)</label>
-        <input id="simAmount" type="number" value="1000" step="100" disabled />
-      </div>
-
-      <div class="action-row">
-        <button id="addShockBtn" type="button" class="btn-load" disabled>적용 및 추가</button>
-        <button id="resetShockBtn" type="button" class="btn-sub" disabled>초기화</button>
-      </div>
-
-      <div id="shockChips" class="chips"></div>
-      <div id="simResultBox" class="result-box" hidden></div>
     </section>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
-  <script src="app.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>
