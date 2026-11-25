@@ -3,49 +3,213 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>산업연관표 분석 웹앱</title>
-  <link rel="stylesheet" href="./style.css" />
+  <title>2023 연장 투입산출표 분석기</title>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --text: #18202c;
+      --muted: #5f6c7b;
+      --line: #dfe5ee;
+      --primary: #1f4e78;
+      --primary-weak: #eaf2f8;
+      --ok: #197149;
+      --err: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      background: var(--primary);
+      color: #fff;
+      padding: 20px 24px;
+    }
+    header h1 {
+      margin: 0 0 4px;
+      font-size: 20px;
+    }
+    header p {
+      margin: 0;
+      font-size: 13px;
+      opacity: 0.9;
+    }
+    main {
+      max-width: 1180px;
+      margin: 24px auto;
+      padding: 0 16px 48px;
+      display: grid;
+      gap: 18px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 18px 20px;
+    }
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 10px;
+    }
+    .status-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      background: #fafbfd;
+    }
+    .status-item .label { font-weight: 700; display: block; margin-bottom: 2px; }
+    .status-item .path { color: var(--muted); font-size: 12px; word-break: break-all; }
+    .badge-ok { color: var(--ok); font-weight: 700; }
+    .badge-err { color: var(--err); font-weight: 700; }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: end;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    select, input, button {
+      height: 38px;
+      border-radius: 7px;
+      border: 1px solid #c6d0de;
+      font-size: 14px;
+      padding: 0 10px;
+      background: #fff;
+      color: var(--text);
+    }
+    button {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 0 16px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { opacity: 0.92; }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .kpi {
+      background: var(--primary-weak);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .kpi .k-title { font-size: 12px; color: var(--muted); }
+    .kpi .k-val { font-size: 20px; font-weight: 700; margin-top: 4px; }
+    .table-wrap {
+      overflow-x: auto;
+      margin-top: 12px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      white-space: nowrap;
+    }
+    th { background: #f2f5f9; font-weight: 700; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    pre.log {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      max-height: 220px;
+      overflow: auto;
+      margin: 0;
+    }
+  </style>
 </head>
 <body>
-  <main class="container">
-    <header class="header">
-      <h1>산업연관표(I-O) 분석 웹앱</h1>
-      <p class="subtitle">로컬 기본부문 엑셀(.xlsx) 파일을 직접 불러와 분석합니다.</p>
-    </header>
+  <header>
+    <h1>산업연관표(2023년 연장) 분석기</h1>
+    <p>저장소 <code>data/</code> 폴더의 기본·통합대·통합중·통합소분류 엑셀을 자동 로드해 연쇄효과와 공급충격을 계산합니다.</p>
+  </header>
 
-    <section class="panel">
-      <h2>1. 기본부문 엑셀 불러오기</h2>
-      <div class="controls">
-        <label for="excelFileInput">기본부문 파일(.xlsx)</label>
-        <input
-          id="excelFileInput"
-          type="file"
-          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        />
-        <button id="loadBtn" type="button">불러오기 및 검증</button>
+  <main>
+    <section class="card">
+      <h2>1. 데이터 파일 로딩 상태</h2>
+      <div id="file-status" class="status-grid"></div>
+      <div style="margin-top: 12px;">
+        <button id="btn-reload" type="button">데이터 다시 불러오기</button>
       </div>
-      <div id="status" class="status">대기 중 · .xlsx 파일을 선택해 주세요.</div>
-      <div id="validation" class="validation"></div>
     </section>
 
-    <section class="panel" id="analysisPanel">
-      <h2>2. 분석 및 파급효과</h2>
+    <section class="card">
+      <h2>2. 부문 선택 및 충격 시뮬레이션</h2>
       <div class="controls">
-        <label for="sheetSelect">시트 선택</label>
-        <select id="sheetSelect" disabled></select>
-
-        <label for="sectorSelect">대상 부문 선택</label>
-        <select id="sectorSelect" disabled></select>
-
-        <label for="shockInput">공급/수요 충격(단위: 백만원 또는 비율)</label>
-        <input id="shockInput" type="number" step="any" value="1000" disabled />
-
-        <button id="runBtn" type="button" disabled>분석 실행</button>
+        <label>
+          분류 체계
+          <select id="dataset-select"></select>
+        </label>
+        <label>
+          대상 산업(부문)
+          <select id="sector-select"></select>
+        </label>
+        <label>
+          최종수요 / 산출 충격률 (%)
+          <input id="shock-pct" type="number" step="1" value="10" style="width: 120px;" />
+        </label>
+        <label>
+          공급(부가가치/원가) 충격률 (%)
+          <input id="supply-shock-pct" type="number" step="1" value="5" style="width: 120px;" />
+        </label>
+        <button id="btn-run" type="button">분석 실행</button>
       </div>
-      <div id="result" class="result"></div>
+
+      <div id="kpi-area" class="kpi-grid"></div>
+    </section>
+
+    <section class="card">
+      <h2>3. 전·후방 연쇄효과 및 파급 상위 부문</h2>
+      <div class="table-wrap">
+        <table id="result-table">
+          <thead>
+            <tr>
+              <th>순위</th>
+              <th>산업명</th>
+              <th class="num">투입계수 (a_ij)</th>
+              <th class="num">산출계수 (b_ij)</th>
+              <th class="num">수요파급(ΔX)</th>
+              <th class="num">공급충격 파급</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>4. 시트 구조 및 디버그 로그</h2>
+      <pre id="debug-log" class="log"></pre>
     </section>
   </main>
 
-  <script type="module" src="./app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
