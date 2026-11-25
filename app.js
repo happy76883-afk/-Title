@@ -1,187 +1,274 @@
-const WORKER_MSG = {
-  LOAD: "load_excel",
-  RUN: "run_analysis",
-  LOADED: ["loaded", "excel_loaded", "ready"],
-  VALIDATED: ["validated", "validation_result"],
-  ANALYZED: ["analyzed", "analysis_result", "result"],
-  ERROR: ["error", "load_error", "validation_error", "analysis_error"],
+const DATA_FILES = [
+  {
+    key: "basic",
+    label: "기본부문",
+    fileName: "(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx"
+  },
+  {
+    key: "major",
+    label: "통합대분류",
+    fileName: "(표)(2023연장)투입산출표_생산자가격_통합대분류.xlsx"
+  },
+  {
+    key: "medium",
+    label: "통합중분류",
+    fileName: "(표)(2023연장)투입산출표_생산자가격_통합중분류.xlsx"
+  },
+  {
+    key: "minor",
+    label: "통합소분류",
+    fileName: "(표)(2023연장)투입산출표_생산자가격_통합소분류.xlsx"
+  }
+];
+
+const state = {
+  datasets: {},
+  logs: []
 };
 
-const els = {
-  fileInput: document.getElementById("excelFileInput"),
-  loadBtn: document.getElementById("loadBtn"),
-  runBtn: document.getElementById("runBtn"),
-  sheetSelect: document.getElementById("sheetSelect"),
-  sectorSelect: document.getElementById("sectorSelect"),
-  shockInput: document.getElementById("shockInput"),
-  status: document.getElementById("status"),
-  validation: document.getElementById("validation"),
-  result: document.getElementById("result"),
-};
-
-let selectedFile = null;
-let isDataReady = false;
-
-const worker = new Worker("./worker.js", { type: "module" });
-
-function setStatus(text) {
-  els.status.textContent = text;
-}
-
-function setValidation(text) {
-  els.validation.textContent = text;
-}
-
-function setResult(content) {
-  if (typeof content === "string") {
-    els.result.textContent = content;
-  } else {
-    els.result.textContent = JSON.stringify(content, null, 2);
+function logMsg(msg) {
+  const time = new Date().toLocaleTimeString("ko-KR");
+  state.logs.push(`[${time}] ${msg}`);
+  const el = document.getElementById("debug-log");
+  if (el) {
+    el.textContent = state.logs.join("\n");
+    el.scrollTop = el.scrollHeight;
   }
 }
 
-function populateSelect(selectEl, items = []) {
-  selectEl.innerHTML = "";
-  items.forEach((item, idx) => {
+function parseNumber(val) {
+  if (typeof val === "number") return Number.isFinite(val) ? val : 0;
+  if (val == null) return 0;
+  const cleaned = String(val).replace(/,/g, "").trim();
+  if (!cleaned || cleaned === "-" || cleaned === "·") return 0;
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : 0;
+}
+
+/**
+ * 한국은행 투입산출표 엑셀에서 정방형 산업 매트릭스를 자동 추출합니다.
+ * 상단 제목/단위 행을 건너뛰고 숫자 밀도가 높은 구간을 탐색합니다.
+ */
+function extractIOMatrix(workbook, fileLabel) {
+  let bestResult = null;
+
+  for (const sheetName of workbook.SheetNames) {
+    const ws = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+    if (!rows || rows.length < 10) continue;
+
+    // 각 행에서 숫자로 변환 가능한 셀 개수를 세어 데이터 행 후보를 찾음
+    const numericRows = [];
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      if (!Array.isArray(row) || row.length < 5) continue;
+
+      // 산업명 후보(문자열 셀) 찾기
+      const nameCell = row.find((cell, idx) => idx < 4 && typeof cell === "string" && cell.trim().length > 0 && !/^\d+$/.test(cell.trim()));
+      const nums = [];
+      for (let c = 1; c < row.length; c++) {
+        const v = row[c];
+        if (typeof v === "number" && Number.isFinite(v)) {
+          nums.push({ col: c, val: v });
+        } else if (typeof v === "string") {
+          const t = v.replace(/,/g, "").trim();
+          if (/^-?\d+(\.\d+)?$/.test(t)) {
+            nums.push({ col: c, val: Number(t) });
+          }
+        }
+      }
+
+      if (nameCell && nums.length >= 4) {
+        numericRows.push({
+          rowIdx: r,
+          name: String(nameCell).trim(),
+          nums
+        });
+      }
+    }
+
+    if (numericRows.length >= 3) {
+      // 연속된 블록 중 가장 큰 블록 선택
+      const n = numericRows.length;
+      const sectors = numericRows.slice(0, n).map((item) => item.name);
+      const matrix = Array.from({ length: n }, () => Array(n).fill(0));
+
+      for (let i = 0; i < n; i++) {
+        const rowNums = numericRows[i].nums;
+        for (let j = 0; j < Math.min(n, rowNums.length); j++) {
+          matrix[i][j] = rowNums[j].val;
+        }
+      }
+
+      if (!bestResult || n > bestResult.sectors.length) {
+        bestResult = { sheetName, sectors, matrix };
+      }
+    }
+  }
+
+  if (!bestResult) {
+    throw new Error(`${fileLabel}: 유효한 숫자 행렬 시트를 찾지 못했습니다.`);
+  }
+
+  logMsg(`${fileLabel} -> 시트 "${bestResult.sheetName}"에서 ${bestResult.sectors.length}개 부문 추출`);
+  return bestResult;
+}
+
+function renderFileStatus() {
+  const container = document.getElementById("file-status");
+  container.innerHTML = "";
+
+  for (const item of DATA_FILES) {
+    const ds = state.datasets[item.key];
+    const div = document.createElement("div");
+    div.className = "status-item";
+    const statusHtml = ds
+      ? `<span class="badge-ok">로드 완료 (${ds.sectors.length}개 부문)</span>`
+      : `<span class="badge-err">로드 실패 / 대기</span>`;
+    div.innerHTML = `
+      <span class="label">${item.label} ${statusHtml}</span>
+      <span class="path">data/${item.fileName}</span>
+    `;
+    container.appendChild(div);
+  }
+}
+
+function populateSelectors() {
+  const dsSelect = document.getElementById("dataset-select");
+  const sectorSelect = document.getElementById("sector-select");
+  dsSelect.innerHTML = "";
+
+  const available = DATA_FILES.filter((f) => state.datasets[f.key]);
+  for (const f of available) {
     const opt = document.createElement("option");
-    if (typeof item === "object" && item !== null) {
-      opt.value = item.value ?? item.code ?? item.id ?? idx;
-      opt.textContent = item.label ?? item.name ?? String(opt.value);
-    } else {
-      opt.value = item;
-      opt.textContent = String(item);
-    }
-    selectEl.appendChild(opt);
-  });
-  selectEl.disabled = items.length === 0;
+    opt.value = f.key;
+    opt.textContent = `${f.label} (${state.datasets[f.key].sectors.length}개)`;
+    dsSelect.appendChild(opt);
+  }
+
+  const updateSectors = () => {
+    sectorSelect.innerHTML = "";
+    const currentKey = dsSelect.value;
+    const ds = state.datasets[currentKey];
+    if (!ds) return;
+    ds.sectors.forEach((name, idx) => {
+      const opt = document.createElement("option");
+      opt.value = String(idx);
+      opt.textContent = `${idx + 1}. ${name}`;
+      sectorSelect.appendChild(opt);
+    });
+  };
+
+  dsSelect.onchange = updateSectors;
+  updateSectors();
 }
 
-function setAnalysisEnabled(enabled) {
-  isDataReady = enabled;
-  els.sheetSelect.disabled = !enabled || els.sheetSelect.options.length === 0;
-  els.sectorSelect.disabled = !enabled || els.sectorSelect.options.length === 0;
-  els.shockInput.disabled = !enabled;
-  els.runBtn.disabled = !enabled;
+async function loadAllData() {
+  state.datasets = {};
+  state.logs = [];
+  logMsg("data/ 폴더의 4개 엑셀 파일 로드를 시작합니다.");
+
+  for (const item of DATA_FILES) {
+    const url = encodeURI(`./data/${item.fileName}`);
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const buf = await res.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      state.datasets[item.key] = extractIOMatrix(wb, item.label);
+    } catch (err) {
+      logMsg(`[오류] ${item.label} (${item.fileName}): ${err.message}`);
+    }
+  }
+
+  renderFileStatus();
+  populateSelectors();
+  runAnalysis();
 }
 
-els.fileInput.addEventListener("change", (event) => {
-  const file = event.target.files?.[0] ?? null;
-  selectedFile = file;
-  setAnalysisEnabled(false);
-  setValidation("");
-  setResult("");
+function runAnalysis() {
+  const dsKey = document.getElementById("dataset-select").value;
+  const targetIdx = Number(document.getElementById("sector-select").value || 0);
+  const demandShockPct = parseNumber(document.getElementById("shock-pct").value);
+  const supplyShockPct = parseNumber(document.getElementById("supply-shock-pct").value);
 
-  if (!file) {
-    setStatus("대기 중 · .xlsx 파일을 선택해 주세요.");
+  const ds = state.datasets[dsKey];
+  const kpiArea = document.getElementById("kpi-area");
+  const tbody = document.querySelector("#result-table tbody");
+
+  if (!ds || !ds.sectors.length) {
+    kpiArea.innerHTML = `<div class="kpi"><div class="k-title">상태</div><div class="k-val">데이터 없음</div></div>`;
+    tbody.innerHTML = "";
     return;
   }
 
-  const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
-  setStatus(`선택됨: ${file.name} (${sizeMB} MB) · [불러오기 및 검증]을 눌러주세요.`);
-});
+  const n = ds.sectors.length;
+  // 행 i의 총투입/총산출 근사치
+  const rowTotals = ds.matrix.map((r) => r.reduce((acc, v) => acc + Math.max(0, v), 0) || 1);
+  const colTotals = Array.from({ length: n }, (_, c) =>
+    ds.matrix.reduce((acc, r) => acc + Math.max(0, r[c] || 0), 0) || 1
+  );
 
-async function handleLoadExcel() {
-  const file = selectedFile || els.fileInput.files?.[0];
-  if (!file) {
-    setStatus("먼저 로컬에서 기본부문 .xlsx 파일을 선택해 주세요.");
-    return;
-  }
+  // 전방연쇄(산출계수 b_ij = z_ij / X_i) 및 후방연쇄(투입계수 a_ij = z_ij / X_j)
+  const forwardLinkage = Array.from({ length: n }, (_, j) =>
+    (ds.matrix[targetIdx]?.[j] || 0) / rowTotals[targetIdx]
+  );
+  const backwardLinkage = Array.from({ length: n }, (_, i) =>
+    (ds.matrix[i]?.[targetIdx] || 0) / colTotals[targetIdx]
+  );
 
-  try {
-    setAnalysisEnabled(false);
-    setValidation("");
-    setResult("");
-    els.loadBtn.disabled = true;
-    setStatus("로컬 파일 읽는 중…");
+  const baseOutput = rowTotals[targetIdx];
+  const demandImpactTotal = baseOutput * (demandShockPct / 100) * (1 + backwardLinkage.reduce((a, b) => a + b, 0));
+  const supplyImpactTotal = baseOutput * (supplyShockPct / 100) * (1 + forwardLinkage.reduce((a, b) => a + b, 0));
 
-    const buffer = await file.arrayBuffer();
-    if (!buffer || buffer.byteLength < 100) {
-      throw new Error(`파일 크기가 너무 작습니다 (${buffer?.byteLength ?? 0} bytes). 정상 .xlsx 파일인지 확인해 주세요.`);
-    }
+  kpiArea.innerHTML = `
+    <div class="kpi">
+      <div class="k-title">선택 부문</div>
+      <div class="k-val" style="font-size:15px;">${ds.sectors[targetIdx]}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-title">후방연쇄 계수합</div>
+      <div class="k-val">${backwardLinkage.reduce((a, b) => a + b, 0).toFixed(4)}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-title">수요충격 총파급 추정</div>
+      <div class="k-val">${demandImpactTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-title">공급충격 총파급 추정</div>
+      <div class="k-val">${supplyImpactTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div>
+    </div>
+  `;
 
-    setStatus("Excel 읽기와 계수 검증 중…");
+  const rowsRanked = ds.sectors
+    .map((name, idx) => {
+      const aIj = backwardLinkage[idx] || 0;
+      const bIj = forwardLinkage[idx] || 0;
+      const dShock = baseOutput * (demandShockPct / 100) * aIj;
+      const sShock = baseOutput * (supplyShockPct / 100) * bIj;
+      return { idx, name, aIj, bIj, dShock, sShock, score: Math.abs(dShock) + Math.abs(sShock) };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20);
 
-    // worker.js가 buffer 또는 bytes 중 어느 키를 읽어도 대응할 수 있게 전달
-    worker.postMessage(
-      {
-        type: WORKER_MSG.LOAD,
-        fileName: file.name,
-        buffer,
-        bytes: new Uint8Array(buffer.slice(0)),
-      },
-      [buffer]
-    );
-  } catch (err) {
-    els.loadBtn.disabled = false;
-    setStatus(`불러오기 실패: ${err?.message || err}`);
-  }
+  tbody.innerHTML = rowsRanked
+    .map(
+      (r, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${r.name}</td>
+        <td class="num">${r.aIj.toFixed(4)}</td>
+        <td class="num">${r.bIj.toFixed(4)}</td>
+        <td class="num">${r.dShock.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td class="num">${r.sShock.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+      </tr>
+    `
+    )
+    .join("");
 }
 
-function handleRunAnalysis() {
-  if (!isDataReady) {
-    setStatus("먼저 기본부문 엑셀 파일을 불러와 주세요.");
-    return;
-  }
-
-  setStatus("분석 계산 중…");
-  worker.postMessage({
-    type: WORKER_MSG.RUN,
-    sheet: els.sheetSelect.value,
-    sector: els.sectorSelect.value,
-    shock: Number(els.shockInput.value),
-  });
-}
-
-worker.addEventListener("message", (event) => {
-  const msg = event.data || {};
-  const type = msg.type || msg.event || "";
-
-  if (WORKER_MSG.ERROR.includes(type) || msg.error) {
-    els.loadBtn.disabled = false;
-    setAnalysisEnabled(false);
-    const errText = msg.error?.message || msg.error || msg.message || "알 수 없는 워커 오류";
-    setStatus(`오류 발생: ${errText}`);
-    if (msg.validation) {
-      setValidation(typeof msg.validation === "string" ? msg.validation : JSON.stringify(msg.validation, null, 2));
-    }
-    return;
-  }
-
-  if (msg.status) {
-    setStatus(msg.status);
-  }
-
-  if (msg.validation) {
-    setValidation(typeof msg.validation === "string" ? msg.validation : JSON.stringify(msg.validation, null, 2));
-  }
-
-  if (WORKER_MSG.LOADED.includes(type) || WORKER_MSG.VALIDATED.includes(type) || msg.sectors || msg.sheets) {
-    els.loadBtn.disabled = false;
-
-    if (Array.isArray(msg.sheets) && msg.sheets.length > 0) {
-      populateSelect(els.sheetSelect, msg.sheets);
-    }
-    if (Array.isArray(msg.sectors) && msg.sectors.length > 0) {
-      populateSelect(els.sectorSelect, msg.sectors);
-    }
-
-    const sectorCount = msg.sectorCount ?? msg.sectors?.length ?? "";
-    setStatus(sectorCount ? `준비 완료 · ${sectorCount}개 부문` : "준비 완료");
-    setAnalysisEnabled(true);
-    return;
-  }
-
-  if (WORKER_MSG.ANALYZED.includes(type) || msg.result !== undefined || msg.data !== undefined) {
-    setStatus("분석 완료");
-    setResult(msg.result ?? msg.data ?? msg);
-  }
-});
-
-worker.addEventListener("error", (err) => {
-  els.loadBtn.disabled = false;
-  setAnalysisEnabled(false);
-  setStatus(`워커 실행 오류: ${err.message || "worker.js를 확인해 주세요."}`);
-});
-
-els.loadBtn.addEventListener("click", handleLoadExcel);
-els.runBtn.addEventListener("click", handleRunAnalysis);
+document.getElementById("btn-reload").addEventListener("click", loadAllData);
+document.getElementById("btn-run").addEventListener("click", runAnalysis);
+window.addEventListener("DOMContentLoaded", loadAllData);
