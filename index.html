@@ -1,173 +1,51 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="utf-8" />
-  <meta content="width=device-width,initial-scale=1" name="viewport" />
-  <title>과제물1: 산업연관표분석 웹앱</title>
-  <link href="./style.css" rel="stylesheet" />
-  <script defer="" src="./app.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>산업연관표 분석 웹앱</title>
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <header>
-    <p>2023 · 생산자가격 · 기본부문</p>
-    <h1>과제물1: 산업연관표분석 웹앱</h1>
-    <p>12개 원자료 시트 탐색과 380개 부문 수요충격·연관·공급충격 분석</p>
-  </header>
+  <main class="container">
+    <header class="header">
+      <h1>산업연관표(I-O) 분석 웹앱</h1>
+      <p class="subtitle">로컬 기본부문 엑셀(.xlsx) 파일을 직접 불러와 분석합니다.</p>
+    </header>
 
-  <nav aria-label="주요 메뉴">
-    <a href="#explorer">1. 원자료 탐색</a>
-    <a href="#simulation">2. 시뮬레이터</a>
-    <a href="#linkage-shock">3. 전방·후방 및 공급충격</a>
-  </nav>
-
-  <main>
-    <aside aria-label="분석 준비 상태" class="loading-status">
-      <p id="status" role="status">"기본부문 불러오기" 버튼을 눌러 자료를 불러오세요.</p>
-      <details>
-        <summary>계수 검증 결과</summary>
-        <pre id="validation">아직 자료를 불러오지 않았습니다.</pre>
-      </details>
-    </aside>
-
-    <section id="explorer">
-      <div class="section-heading">
-        <h2>1. 원자료 탐색</h2>
-        <button id="load-basic" type="button">기본부문 불러오기</button>
+    <section class="panel">
+      <h2>1. 기본부문 엑셀 불러오기</h2>
+      <div class="controls">
+        <label for="excelFileInput">기본부문 파일(.xlsx)</label>
+        <input
+          id="excelFileInput"
+          type="file"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        />
+        <button id="loadBtn" type="button">불러오기 및 검증</button>
       </div>
-      <p>선택한 행이 각 열과 어떻게 연결되는지 확인합니다. 산업 행뿐 아니라 원표의 합계·분석지표 행도 포함됩니다.</p>
-      <label>시트<select disabled="" id="sheet"></select></label>
-      <label>행 이름 검색<input disabled="" id="row-search" placeholder="예: 자동차, 부가가치" /></label>
-      <label>행 선택<select disabled="" id="row"></select></label>
-      <p id="unit"></p>
-      <label>열 검색<input disabled="" id="col-search" placeholder="열 이름 또는 코드" /></label>
-      <div class="scroll">
-        <table>
-          <caption id="explore-caption">기본 자료를 불러온 후 표시됩니다.</caption>
-          <thead>
-            <tr>
-              <th>열 코드</th>
-              <th>열 이름</th>
-              <th>원자료 값</th>
-            </tr>
-          </thead>
-          <tbody id="cells"></tbody>
-        </table>
-      </div>
-      <p class="note">스크롤하여 전체 열을 볼 수 있습니다. 금액표의 일반 데이터 단위는 백만원입니다. 구성비·유발계수 등 요약 행은 행 명칭을 우선 확인하세요.</p>
+      <div id="status" class="status">대기 중 · .xlsx 파일을 선택해 주세요.</div>
+      <div id="validation" class="validation"></div>
     </section>
 
-    <section id="simulation">
-      <h2>2. 국내 생산물 최종수요 증가 시뮬레이션</h2>
-      <p>수입 완제품 구매를 제외한 국내 생산물 최종수요 증가를 입력하세요. 여러 산업의 증가액은 합산됩니다.</p>
-      <label>산업 검색<input disabled="" id="sector-search" placeholder="산업 이름 또는 코드" /></label>
-      <form id="scenario">
-        <label>산업<select disabled="" id="sector" required=""></select></label>
-        <label>증가액 (백만원)<input disabled="" id="amount" min="0.01" required="" step="any" type="number" value="1000" /></label>
-        <p class="note">1,000백만원 = 10억원. 이번 버전은 양의 수요 증가만 지원합니다.</p>
-        <button disabled="" id="add" type="submit">시나리오에 추가</button>
-      </form>
-      <ul id="basket"></ul>
-      <button disabled="" id="run" type="button">파급효과 계산</button>
-      <button id="clear" type="button">시나리오 비우기</button>
-      <p id="sim-status" role="status">시나리오를 추가하세요.</p>
-      <div hidden="" id="results">
-        <div class="cards" id="cards"></div>
-        <h3>생산유발액 상위 15개 산업</h3>
-        <div id="bars"></div>
-        <button id="download" type="button">전체 380개 산업 CSV 다운로드</button>
-        <div class="scroll">
-          <table>
-            <caption>산업별 유발액 — 백만원, 생산유발액 내림차순</caption>
-            <thead>
-              <tr>
-                <th>코드</th>
-                <th>산업</th>
-                <th>생산</th>
-                <th>수입</th>
-                <th>부가가치</th>
-              </tr>
-            </thead>
-            <tbody id="result-rows"></tbody>
-          </table>
-        </div>
+    <section class="panel" id="analysisPanel">
+      <h2>2. 분석 및 파급효과</h2>
+      <div class="controls">
+        <label for="sheetSelect">시트 선택</label>
+        <select id="sheetSelect" disabled></select>
+
+        <label for="sectorSelect">대상 부문 선택</label>
+        <select id="sectorSelect" disabled></select>
+
+        <label for="shockInput">공급/수요 충격(단위: 백만원 또는 비율)</label>
+        <input id="shockInput" type="number" step="any" value="1000" disabled />
+
+        <button id="runBtn" type="button" disabled>분석 실행</button>
       </div>
-    </section>
-
-    <section id="linkage-shock">
-      <h2>3. 전방·후방 연관산업 및 공급충격 분석</h2>
-      <p>선택한 기준 산업의 전방·후방 연관구조를 살펴보거나, 해당 산업의 투입원가 변동에 따른 공급충격 파급을 계산합니다.</p>
-      <label>기준 산업 검색<input disabled="" id="ls-sector-search" placeholder="산업 이름 또는 코드" /></label>
-      <form id="ls-form">
-        <label>기준 산업<select disabled="" id="ls-sector" required=""></select></label>
-        <label>분석 모드
-          <select disabled="" id="ls-mode">
-            <option value="linkage">전방·후방 연관산업</option>
-            <option value="shock">공급충격 시뮬레이션</option>
-          </select>
-        </label>
-        <label>상위 표시 개수<input disabled="" id="ls-topk" type="number" min="5" max="100" step="1" value="15" /></label>
-        <label>공급충격 비율 (%)<input disabled="" id="ls-shock" type="number" step="any" value="10" /></label>
-        <button disabled="" id="ls-run" type="submit">연관·충격 분석 실행</button>
-      </form>
-      <p id="ls-status" role="status">기본 자료를 불러온 후 실행하세요.</p>
-
-      <div hidden="" id="ls-results">
-        <div class="cards" id="ls-cards"></div>
-
-        <div id="ls-linkage-view">
-          <h3>후방연쇄 상위 산업 (기준 산업이 국산 투입으로 끌어당기는 산업)</h3>
-          <div class="scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>코드</th>
-                  <th>산업</th>
-                  <th>생산유발계수(L)</th>
-                  <th>국산투입계수(Ad)</th>
-                </tr>
-              </thead>
-              <tbody id="ls-backward-rows"></tbody>
-            </table>
-          </div>
-
-          <h3>전방연쇄 상위 산업 (기준 산업의 국산 산출물을 중간재로 쓰는 산업)</h3>
-          <div class="scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>코드</th>
-                  <th>산업</th>
-                  <th>전방투입계수(Ad)</th>
-                  <th>전방배분비중(%)</th>
-                </tr>
-              </thead>
-              <tbody id="ls-forward-rows"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div hidden="" id="ls-shock-view">
-          <h3>공급충격 파급 상위 산업 (%)</h3>
-          <div id="ls-bars"></div>
-          <div class="scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>코드</th>
-                  <th>산업</th>
-                  <th>직접영향(%)</th>
-                  <th>간접영향(%)</th>
-                  <th>총파급(%)</th>
-                </tr>
-              </thead>
-              <tbody id="ls-shock-rows"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
+      <div id="result" class="result"></div>
     </section>
   </main>
 
-  <footer>브라우저 계산 · GitHub Pages 배포용</footer>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
