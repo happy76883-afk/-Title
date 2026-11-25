@@ -1,274 +1,244 @@
-const DATA_FILES = [
-  {
-    key: "basic",
-    label: "기본부문",
-    fileName: "(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx"
-  },
-  {
-    key: "major",
-    label: "통합대분류",
-    fileName: "(표)(2023연장)투입산출표_생산자가격_통합대분류.xlsx"
-  },
-  {
-    key: "medium",
-    label: "통합중분류",
-    fileName: "(표)(2023연장)투입산출표_생산자가격_통합중분류.xlsx"
-  },
-  {
-    key: "minor",
-    label: "통합소분류",
-    fileName: "(표)(2023연장)투입산출표_생산자가격_통합소분류.xlsx"
-  }
+const FILES = [
+  { key: "basic", label: "기본부문", name: "(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx" },
+  { key: "major", label: "통합대분류", name: "(표)(2023연장)투입산출표_생산자가격_통합대분류.xlsx" },
+  { key: "medium", label: "통합중분류", name: "(표)(2023연장)투입산출표_생산자가격_통합중분류.xlsx" },
+  { key: "minor", label: "통합소분류", name: "(표)(2023연장)투입산출표_생산자가격_통합소분류.xlsx" }
 ];
 
-const state = {
-  datasets: {},
+const store = {
+  loaded: {},
   logs: []
 };
 
-function logMsg(msg) {
-  const time = new Date().toLocaleTimeString("ko-KR");
-  state.logs.push(`[${time}] ${msg}`);
-  const el = document.getElementById("debug-log");
-  if (el) {
-    el.textContent = state.logs.join("\n");
-    el.scrollTop = el.scrollHeight;
+function addLog(text) {
+  const now = new Date().toLocaleTimeString("ko-KR");
+  store.logs.push(`[${now}] ${text}`);
+  const box = document.getElementById("log-box");
+  if (box) {
+    box.textContent = store.logs.join("\n");
+    box.scrollTop = box.scrollHeight;
   }
 }
 
-function parseNumber(val) {
-  if (typeof val === "number") return Number.isFinite(val) ? val : 0;
-  if (val == null) return 0;
-  const cleaned = String(val).replace(/,/g, "").trim();
-  if (!cleaned || cleaned === "-" || cleaned === "·") return 0;
-  const num = Number(cleaned);
-  return Number.isFinite(num) ? num : 0;
+function toNum(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  if (v == null) return 0;
+  const s = String(v).replace(/,/g, "").trim();
+  if (!s || s === "-" || s === "·") return 0;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
 }
 
-/**
- * 한국은행 투입산출표 엑셀에서 정방형 산업 매트릭스를 자동 추출합니다.
- * 상단 제목/단위 행을 건너뛰고 숫자 밀도가 높은 구간을 탐색합니다.
- */
-function extractIOMatrix(workbook, fileLabel) {
-  let bestResult = null;
+function parseWorkbook(wb, label) {
+  let best = null;
 
-  for (const sheetName of workbook.SheetNames) {
-    const ws = workbook.Sheets[sheetName];
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-    if (!rows || rows.length < 10) continue;
+    if (!Array.isArray(rows) || rows.length < 5) continue;
 
-    // 각 행에서 숫자로 변환 가능한 셀 개수를 세어 데이터 행 후보를 찾음
-    const numericRows = [];
+    const candidates = [];
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
-      if (!Array.isArray(row) || row.length < 5) continue;
+      if (!Array.isArray(row) || row.length < 4) continue;
 
-      // 산업명 후보(문자열 셀) 찾기
-      const nameCell = row.find((cell, idx) => idx < 4 && typeof cell === "string" && cell.trim().length > 0 && !/^\d+$/.test(cell.trim()));
+      const sectorName = row.find(
+        (cell, cIdx) =>
+          cIdx < 4 &&
+          typeof cell === "string" &&
+          cell.trim().length > 0 &&
+          !/^-?\d+(\.\d+)?$/.test(cell.trim())
+      );
+
       const nums = [];
       for (let c = 1; c < row.length; c++) {
-        const v = row[c];
-        if (typeof v === "number" && Number.isFinite(v)) {
-          nums.push({ col: c, val: v });
-        } else if (typeof v === "string") {
-          const t = v.replace(/,/g, "").trim();
-          if (/^-?\d+(\.\d+)?$/.test(t)) {
-            nums.push({ col: c, val: Number(t) });
+        const cell = row[c];
+        if (typeof cell === "number" && Number.isFinite(cell)) {
+          nums.push(cell);
+        } else if (typeof cell === "string") {
+          const cleaned = cell.replace(/,/g, "").trim();
+          if (/^-?\d+(\.\d+)?$/.test(cleaned)) {
+            nums.push(Number(cleaned));
           }
         }
       }
 
-      if (nameCell && nums.length >= 4) {
-        numericRows.push({
-          rowIdx: r,
-          name: String(nameCell).trim(),
-          nums
-        });
+      if (sectorName && nums.length >= 3) {
+        candidates.push({ name: String(sectorName).trim(), nums });
       }
     }
 
-    if (numericRows.length >= 3) {
-      // 연속된 블록 중 가장 큰 블록 선택
-      const n = numericRows.length;
-      const sectors = numericRows.slice(0, n).map((item) => item.name);
-      const matrix = Array.from({ length: n }, () => Array(n).fill(0));
-
-      for (let i = 0; i < n; i++) {
-        const rowNums = numericRows[i].nums;
-        for (let j = 0; j < Math.min(n, rowNums.length); j++) {
-          matrix[i][j] = rowNums[j].val;
-        }
-      }
-
-      if (!bestResult || n > bestResult.sectors.length) {
-        bestResult = { sheetName, sectors, matrix };
+    if (candidates.length >= 2) {
+      const n = candidates.length;
+      const sectors = candidates.map((d) => d.name);
+      const matrix = Array.from({ length: n }, (_, i) =>
+        Array.from({ length: n }, (_, j) => (candidates[i].nums[j] !== undefined ? candidates[i].nums[j] : 0))
+      );
+      if (!best || n > best.sectors.length) {
+        best = { sheetName, sectors, matrix };
       }
     }
   }
 
-  if (!bestResult) {
-    throw new Error(`${fileLabel}: 유효한 숫자 행렬 시트를 찾지 못했습니다.`);
+  if (!best) {
+    throw new Error(`${label} 시트에서 숫자 행렬을 찾지 못했습니다.`);
   }
 
-  logMsg(`${fileLabel} -> 시트 "${bestResult.sheetName}"에서 ${bestResult.sectors.length}개 부문 추출`);
-  return bestResult;
+  addLog(`${label}: "${best.sheetName}" 시트 자동 인식 (${best.sectors.length}개 부문)`);
+  return best;
 }
 
-function renderFileStatus() {
-  const container = document.getElementById("file-status");
-  container.innerHTML = "";
+function renderStatus() {
+  const grid = document.getElementById("status-grid");
+  grid.innerHTML = "";
 
-  for (const item of DATA_FILES) {
-    const ds = state.datasets[item.key];
-    const div = document.createElement("div");
-    div.className = "status-item";
-    const statusHtml = ds
-      ? `<span class="badge-ok">로드 완료 (${ds.sectors.length}개 부문)</span>`
-      : `<span class="badge-err">로드 실패 / 대기</span>`;
-    div.innerHTML = `
-      <span class="label">${item.label} ${statusHtml}</span>
-      <span class="path">data/${item.fileName}</span>
+  for (const f of FILES) {
+    const item = store.loaded[f.key];
+    const card = document.createElement("div");
+    card.className = "status-card";
+    card.innerHTML = `
+      <strong>${f.label} — ${item ? `<span class="ok">자동 로드 완료 (${item.sectors.length})</span>` : `<span class="err">로드 실패</span>`}</strong>
+      <span class="fname">data/${f.name}</span>
     `;
-    container.appendChild(div);
+    grid.appendChild(card);
   }
 }
 
-function populateSelectors() {
-  const dsSelect = document.getElementById("dataset-select");
-  const sectorSelect = document.getElementById("sector-select");
-  dsSelect.innerHTML = "";
+function refreshDropdowns() {
+  const levelSel = document.getElementById("level-select");
+  const sectorSel = document.getElementById("sector-select");
+  levelSel.innerHTML = "";
 
-  const available = DATA_FILES.filter((f) => state.datasets[f.key]);
-  for (const f of available) {
+  const readyFiles = FILES.filter((f) => store.loaded[f.key]);
+  for (const f of readyFiles) {
     const opt = document.createElement("option");
     opt.value = f.key;
-    opt.textContent = `${f.label} (${state.datasets[f.key].sectors.length}개)`;
-    dsSelect.appendChild(opt);
+    opt.textContent = `${f.label} (${store.loaded[f.key].sectors.length}개)`;
+    levelSel.appendChild(opt);
   }
 
-  const updateSectors = () => {
-    sectorSelect.innerHTML = "";
-    const currentKey = dsSelect.value;
-    const ds = state.datasets[currentKey];
-    if (!ds) return;
-    ds.sectors.forEach((name, idx) => {
+  const fillSectors = () => {
+    sectorSel.innerHTML = "";
+    const cur = store.loaded[levelSel.value];
+    if (!cur) return;
+    cur.sectors.forEach((name, idx) => {
       const opt = document.createElement("option");
       opt.value = String(idx);
       opt.textContent = `${idx + 1}. ${name}`;
-      sectorSelect.appendChild(opt);
+      sectorSel.appendChild(opt);
     });
   };
 
-  dsSelect.onchange = updateSectors;
-  updateSectors();
+  levelSel.onchange = () => {
+    fillSectors();
+    calculate();
+  };
+  sectorSel.onchange = calculate;
+
+  fillSectors();
 }
 
-async function loadAllData() {
-  state.datasets = {};
-  state.logs = [];
-  logMsg("data/ 폴더의 4개 엑셀 파일 로드를 시작합니다.");
+function calculate() {
+  const key = document.getElementById("level-select").value;
+  const idx = Number(document.getElementById("sector-select").value || 0);
+  const dPct = toNum(document.getElementById("demand-shock").value);
+  const sPct = toNum(document.getElementById("supply-shock").value);
 
-  for (const item of DATA_FILES) {
-    const url = encodeURI(`./data/${item.fileName}`);
-    try {
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const buf = await res.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      state.datasets[item.key] = extractIOMatrix(wb, item.label);
-    } catch (err) {
-      logMsg(`[오류] ${item.label} (${item.fileName}): ${err.message}`);
-    }
-  }
-
-  renderFileStatus();
-  populateSelectors();
-  runAnalysis();
-}
-
-function runAnalysis() {
-  const dsKey = document.getElementById("dataset-select").value;
-  const targetIdx = Number(document.getElementById("sector-select").value || 0);
-  const demandShockPct = parseNumber(document.getElementById("shock-pct").value);
-  const supplyShockPct = parseNumber(document.getElementById("supply-shock-pct").value);
-
-  const ds = state.datasets[dsKey];
-  const kpiArea = document.getElementById("kpi-area");
+  const cur = store.loaded[key];
+  const kpiGrid = document.getElementById("kpi-grid");
   const tbody = document.querySelector("#result-table tbody");
 
-  if (!ds || !ds.sectors.length) {
-    kpiArea.innerHTML = `<div class="kpi"><div class="k-title">상태</div><div class="k-val">데이터 없음</div></div>`;
+  if (!cur || !cur.sectors.length) {
+    kpiGrid.innerHTML = `<div class="kpi"><div class="label">상태</div><div class="val">데이터 없음</div></div>`;
     tbody.innerHTML = "";
     return;
   }
 
-  const n = ds.sectors.length;
-  // 행 i의 총투입/총산출 근사치
-  const rowTotals = ds.matrix.map((r) => r.reduce((acc, v) => acc + Math.max(0, v), 0) || 1);
-  const colTotals = Array.from({ length: n }, (_, c) =>
-    ds.matrix.reduce((acc, r) => acc + Math.max(0, r[c] || 0), 0) || 1
+  const n = cur.sectors.length;
+  const rowSum = cur.matrix.map((r) => r.reduce((a, b) => a + Math.max(0, b), 0) || 1);
+  const colSum = Array.from({ length: n }, (_, c) =>
+    cur.matrix.reduce((a, r) => a + Math.max(0, r[c] || 0), 0) || 1
   );
 
-  // 전방연쇄(산출계수 b_ij = z_ij / X_i) 및 후방연쇄(투입계수 a_ij = z_ij / X_j)
-  const forwardLinkage = Array.from({ length: n }, (_, j) =>
-    (ds.matrix[targetIdx]?.[j] || 0) / rowTotals[targetIdx]
-  );
-  const backwardLinkage = Array.from({ length: n }, (_, i) =>
-    (ds.matrix[i]?.[targetIdx] || 0) / colTotals[targetIdx]
-  );
+  const aCol = Array.from({ length: n }, (_, i) => (cur.matrix[i]?.[idx] || 0) / colSum[idx]);
+  const bRow = Array.from({ length: n }, (_, j) => (cur.matrix[idx]?.[j] || 0) / rowSum[idx]);
 
-  const baseOutput = rowTotals[targetIdx];
-  const demandImpactTotal = baseOutput * (demandShockPct / 100) * (1 + backwardLinkage.reduce((a, b) => a + b, 0));
-  const supplyImpactTotal = baseOutput * (supplyShockPct / 100) * (1 + forwardLinkage.reduce((a, b) => a + b, 0));
+  const base = rowSum[idx];
+  const backwardSum = aCol.reduce((a, b) => a + b, 0);
+  const forwardSum = bRow.reduce((a, b) => a + b, 0);
 
-  kpiArea.innerHTML = `
+  const demandTotal = base * (dPct / 100) * (1 + backwardSum);
+  const supplyTotal = base * (sPct / 100) * (1 + forwardSum);
+
+  kpiGrid.innerHTML = `
     <div class="kpi">
-      <div class="k-title">선택 부문</div>
-      <div class="k-val" style="font-size:15px;">${ds.sectors[targetIdx]}</div>
+      <div class="label">선택 부문</div>
+      <div class="val" style="font-size:15px;">${cur.sectors[idx]}</div>
     </div>
     <div class="kpi">
-      <div class="k-title">후방연쇄 계수합</div>
-      <div class="k-val">${backwardLinkage.reduce((a, b) => a + b, 0).toFixed(4)}</div>
+      <div class="label">후방연쇄 계수합</div>
+      <div class="val">${backwardSum.toFixed(4)}</div>
     </div>
     <div class="kpi">
-      <div class="k-title">수요충격 총파급 추정</div>
-      <div class="k-val">${demandImpactTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div>
+      <div class="label">수요충격 총파급</div>
+      <div class="val">${demandTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div>
     </div>
     <div class="kpi">
-      <div class="k-title">공급충격 총파급 추정</div>
-      <div class="k-val">${supplyImpactTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div>
+      <div class="label">공급충격 총파급</div>
+      <div class="val">${supplyTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div>
     </div>
   `;
 
-  const rowsRanked = ds.sectors
-    .map((name, idx) => {
-      const aIj = backwardLinkage[idx] || 0;
-      const bIj = forwardLinkage[idx] || 0;
-      const dShock = baseOutput * (demandShockPct / 100) * aIj;
-      const sShock = baseOutput * (supplyShockPct / 100) * bIj;
-      return { idx, name, aIj, bIj, dShock, sShock, score: Math.abs(dShock) + Math.abs(sShock) };
+  const ranked = cur.sectors
+    .map((name, i) => {
+      const aIj = aCol[i] || 0;
+      const bIj = bRow[i] || 0;
+      const dVal = base * (dPct / 100) * aIj;
+      const sVal = base * (sPct / 100) * bIj;
+      return { name, aIj, bIj, dVal, sVal, mag: Math.abs(dVal) + Math.abs(sVal) };
     })
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.mag - a.mag)
     .slice(0, 20);
 
-  tbody.innerHTML = rowsRanked
+  tbody.innerHTML = ranked
     .map(
-      (r, i) => `
+      (r, rank) => `
       <tr>
-        <td>${i + 1}</td>
+        <td>${rank + 1}</td>
         <td>${r.name}</td>
         <td class="num">${r.aIj.toFixed(4)}</td>
         <td class="num">${r.bIj.toFixed(4)}</td>
-        <td class="num">${r.dShock.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
-        <td class="num">${r.sShock.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td class="num">${r.dVal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td class="num">${r.sVal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
       </tr>
     `
     )
     .join("");
 }
 
-document.getElementById("btn-reload").addEventListener("click", loadAllData);
-document.getElementById("btn-run").addEventListener("click", runAnalysis);
-window.addEventListener("DOMContentLoaded", loadAllData);
+async function autoLoadAll() {
+  store.loaded = {};
+  store.logs = [];
+  addLog("data/ 폴더 자동 읽기 시작...");
+
+  for (const f of FILES) {
+    const url = encodeURI(`./data/${f.name}`);
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = await res.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      store.loaded[f.key] = parseWorkbook(wb, f.label);
+    } catch (err) {
+      addLog(`[실패] ${f.label} (${f.name}): ${err.message}`);
+    }
+  }
+
+  renderStatus();
+  refreshDropdowns();
+  calculate();
+}
+
+document.getElementById("reload-btn").addEventListener("click", autoLoadAll);
+document.getElementById("calc-btn").addEventListener("click", calculate);
+window.addEventListener("DOMContentLoaded", autoLoadAll);
