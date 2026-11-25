@@ -1,44 +1,140 @@
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif;
-  background: #f4f6f8;
-  color: #1f2937;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f6f7f9;
+  color: #1f2328;
+  line-height: 1.5;
 }
-.top-banner {
-  background: #0b4a82;
-  color: #fff;
-  padding: 12px 16px;
-  text-align: center;
+
+header {
+  background: #ffffff;
+  border-bottom: 1px solid #d8dee4;
+  padding: 20px 24px;
 }
-.top-banner h1 { margin: 0; font-size: 1rem; font-weight: 600; }
-.page { max-width: 960px; margin: 20px auto; padding: 0 14px 40px; display: flex; flex-direction: column; gap: 18px; }
-.panel { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 22px; }
-.panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.panel h2 { margin: 0 0 8px; font-size: 1.2rem; }
-.hint { margin: 0 0 14px; font-size: 0.9rem; color: #4b5563; }
-.status-msg { font-size: 0.85rem; color: #0b4a82; margin-bottom: 12px; }
-.field { margin-bottom: 14px; }
-.field label { display: block; font-size: 0.88rem; font-weight: 600; margin-bottom: 6px; }
-.field input, .field select {
-  width: 100%; padding: 9px 11px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.92rem; background: #fff;
+
+header p {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: #57606a;
 }
-.field input:disabled, .field select:disabled { background: #f1f5f9; color: #94a3b8; }
-.btn-load {
-  background: #0f4c5c; color: #fff; border: none; border-radius: 6px; padding: 9px 14px; font-weight: 600; cursor: pointer; font-size: 0.88rem;
+
+header h1 {
+  margin: 0;
+  font-size: 22px;
 }
-.btn-load:disabled { opacity: 0.45; cursor: not-allowed; }
-.btn-sub {
-  background: #e5e7eb; color: #374151; border: none; border-radius: 6px; padding: 9px 14px; font-weight: 600; cursor: pointer; font-size: 0.88rem;
+
+main {
+  max-width: 1040px;
+  margin: 20px auto;
+  padding: 0 16px 40px;
+  display: grid;
+  gap: 18px;
 }
-.action-row { display: flex; gap: 8px; margin-bottom: 12px; }
-.empty-msg { font-size: 0.86rem; color: #6b7280; margin: 8px 0 12px; }
-.unit-note { font-size: 0.82rem; color: #6b7280; margin: 10px 0 0; }
-.table-box { max-height: 320px; overflow: auto; border: 1px solid #e2e8f0; border-radius: 6px; }
-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-th, td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; }
-thead th { position: sticky; top: 0; background: #f8fafc; }
-.num { text-align: right; font-variant-numeric: tabular-nums; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.chip { background: #e6f4f1; color: #0f4c5c; padding: 5px 10px; border-radius: 999px; font-size: 0.84rem; font-weight: 600; }
-.result-box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 14px; font-size: 0.9rem; }
+
+.loading-status,
+section {
+  background: #ffffff;
+  border: 1px solid #d8dee4;
+  border-radius: 10px;
+  padding: 18px;
+}
+
+.section-heading h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid #c5ccd4;
+  background: #ffffff;
+}
+
+button {
+  cursor: pointer;
+  background: #1f6feb;
+  color: #ffffff;
+  border-color: #1f6feb;
+  font-weight: 600;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.note {
+  margin: 12px 0;
+  font-size: 13px;
+  color: #57606a;
+}
+
+details {
+  margin-top: 10px;
+}
+
+pre {
+  background: #f6f8fa;
+  padding: 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+
+.scroll {
+  overflow-x: auto;
+  max-height: 460px;
+  overflow-y: auto;
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+caption {
+  caption-side: top;
+  text-align: left;
+  padding: 10px 12px;
+  font-weight: 600;
+  background: #f6f8fa;
+  border-bottom: 1px solid #e5e9f0;
+}
+
+th,
+td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #eef2f6;
+  text-align: left;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  background: #fafbfc;
+}
