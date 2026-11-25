@@ -1,111 +1,139 @@
-import io
+from io import BytesIO
 import json
-import pandas as pd
-import numpy as np
+import openpyxl
 
-EXCEL_BYTES = None
+STATE = {
+    "sheets": [],
+    "parsed": {},
+}
 
-def load_basic_workbook(file_bytes) -> str:
-    global EXCEL_BYTES
-    EXCEL_BYTES = bytes(file_bytes)
-    xl = pd.ExcelFile(io.BytesIO(EXCEL_BYTES))
-    return json.dumps({"sheets": xl.sheet_names}, ensure_ascii=False)
+def _clean_str(val):
+    if val is None:
+        return ""
+    return str(val).strip()
 
-def _parse_sheet(sheet_name: str):
-    df = pd.read_excel(io.BytesIO(EXCEL_BYTES), sheet_name=sheet_name, header=None)
-    rows = df.values.tolist()
+def _detect_unit(ws):
+    for r in range(1, min(10, ws.max_row + 1)):
+        for c in range(1, min(10, ws.max_column + 1)):
+            s = _clean_str(ws.cell(r, c).value)
+            if "단위" in s or "백만원" in s or "억원" in s or "명" in s:
+                return s
+    return "원자료 표기 기준"
 
-    header_idx = 4
-    for idx in range(min(10, len(rows))):
-        r = rows[idx]
-        if r and len(r) > 0 and pd.notna(r[0]) and "상품" in str(r[0]):
-            header_idx = idx
-            break
+def _parse_sheet(ws):
+    max_r = ws.max_row
+    max_c = ws.max_column
+    unit = _detect_unit(ws)
 
-    code_row = rows[header_idx] if len(rows) > header_idx else []
-    name_row = rows[header_idx + 1] if len(rows) > header_idx + 1 else []
+    # 표의 헤더 행/열 시작점 탐색: 문자열이 밀집한 상단 행을 열 헤더로 사용
+    header_row = 1
+    best_non_empty = -1
+    for r in range(1, min(15, max_r + 1)):
+        cnt = sum(1 for c in range(1, max_c + 1) if _clean_str(ws.cell(r, c).value) != "")
+        if cnt > best_non_empty:
+            best_non_empty = cnt
+            header_row = r
+
+    # 왼쪽 몇 열이 코드/부문명인지 판별 (기본 1~2열을 행 식별자로 취급)
+    data_start_col = 3 if max_c >= 4 else 2
 
     cols = []
-    max_len = max(len(code_row), len(name_row))
-    for c_idx in range(2, max_len):
-        c_code = str(code_row[c_idx]).strip() if c_idx < len(code_row) and pd.notna(code_row[c_idx]) else ""
-        c_name = str(name_row[c_idx]).strip() if c_idx < len(name_row) and pd.notna(name_row[c_idx]) else ""
-        if c_code or c_name:
-            cols.append({"col_idx": c_idx, "code": c_code or f"C{c_idx}", "name": c_name or c_code})
+    for c in range(data_start_col, max_c + 1):
+        raw_h = _clean_str(ws.cell(header_row, c).value)
+        col_code = f"C{c - data_start_col + 1:03d}"
+        col_name = raw_h if raw_h else f"열 {c}"
+        cols.append({"col_idx": c, "code": col_code, "name": col_name})
 
-    parsed_rows = []
-    for r in rows[header_idx + 2:]:
-        if not r:
+    rows = []
+    for r in range(header_row + 1, max_r + 1):
+        v1 = _clean_str(ws.cell(r, 1).value)
+        v2 = _clean_str(ws.cell(r, 2).value) if max_c >= 2 else ""
+        if not v1 and not v2:
             continue
-        r_code = str(r[0]).strip() if len(r) > 0 and pd.notna(r[0]) else ""
-        r_name = str(r[1]).strip() if len(r) > 1 and pd.notna(r[1]) else ""
-        if not r_code and not r_name:
-            continue
-        vals = []
+        code = v1 if v1 else f"R{r:03d}"
+        name = v2 if v2 else v1
+        cells = []
         for col in cols:
-            idx = col["col_idx"]
-            v = r[idx] if idx < len(r) and pd.notna(r[idx]) else None
-            if isinstance(v, (np.integer, np.floating)):
-                v = float(v) if isinstance(v, np.floating) else int(v)
-            vals.append(v)
-        parsed_rows.append({
-            "row_idx": len(parsed_rows),
-            "code": r_code,
-            "name": r_name or r_code,
-            "values": vals,
+            raw_val = ws.cell(r, col["col_idx"]).value
+            if isinstance(raw_val, (int, float)):
+                val = raw_val
+            else:
+                s = _clean_str(raw_val)
+                if s == "":
+                    val = None
+                else:
+                    try:
+                        val = float(s.replace(",", ""))
+                    except ValueError:
+                        val = s
+            cells.append({
+                "code": col["code"],
+                "name": col["name"],
+                "value": val,
+            })
+        rows.append({
+            "code": code,
+            "name": name,
+            "cells": cells,
         })
 
-    return {"cols": cols, "rows": parsed_rows}
+    return {
+        "unit": unit,
+        "header_row": header_row,
+        "rows": rows,
+    }
 
-def get_sheet(sheet_name: str) -> str:
-    return json.dumps(_parse_sheet(sheet_name), ensure_ascii=False, default=str)
+def initialize(raw_bytes):
+    wb = openpyxl.load_workbook(BytesIO(bytes(raw_bytes)), data_only=True, read_only=True)
+    sheet_names = list(wb.sheetnames)
+    parsed = {}
+    summary = {}
+    for name in sheet_names:
+        ws = wb[name]
+        info = _parse_sheet(ws)
+        parsed[name] = info
+        summary[name] = {
+            "row_count": len(info["rows"]),
+            "col_count": len(info["rows"][0]["cells"]) if info["rows"] else 0,
+            "unit": info["unit"],
+        }
+    wb.close()
 
-def get_industries() -> str:
-    parsed = _parse_sheet("생산유발계수")
-    inds = [
-        {"code": r["code"], "name": r["name"]}
-        for r in parsed["rows"]
-        if r["code"] and not any(k in r["name"] for k in ("계", "합계", "총투입", "부가가치"))
-    ]
-    return json.dumps(inds, ensure_ascii=False)
-
-def _matrix_from_sheet(sheet_name: str, inds: list[dict]) -> np.ndarray:
-    parsed = _parse_sheet(sheet_name)
-    row_map = {r["code"]: r for r in parsed["rows"]}
-    col_map = {c["code"]: idx for idx, c in enumerate(parsed["cols"])}
-    n = len(inds)
-    M = np.zeros((n, n), dtype=float)
-    for i, ri in enumerate(inds):
-        r = row_map.get(ri["code"])
-        if not r:
-            continue
-        for j, cj in enumerate(inds):
-            ci = col_map.get(cj["code"])
-            if ci is not None and ci < len(r["values"]) and r["values"][ci] is not None:
-                try:
-                    M[i, j] = float(r["values"][ci])
-                except (ValueError, TypeError):
-                    pass
-    return M
-
-def simulate(shocks_json: str) -> str:
-    shocks = json.loads(shocks_json)
-    inds = json.loads(get_industries())
-    n = len(inds)
-    idx_map = {d["code"]: i for i, d in enumerate(inds)}
-
-    dy = np.zeros(n, dtype=float)
-    for s in shocks:
-        if s["code"] in idx_map:
-            dy[idx_map[s["code"]]] += float(s["amount"])
-
-    out_eff = float((_matrix_from_sheet("생산유발계수", inds) @ dy).sum())
-    va_eff = float((_matrix_from_sheet("부가가치유발계수", inds) @ dy).sum())
-    imp_eff = float((_matrix_from_sheet("수입유발계수", inds) @ dy).sum())
+    STATE["sheets"] = sheet_names
+    STATE["parsed"] = parsed
 
     return json.dumps({
-        "total_shock": round(float(dy.sum()), 2),
-        "total_output": round(out_eff, 2),
-        "total_va": round(va_eff, 2),
-        "total_import": round(imp_eff, 2),
+        "sheets": sheet_names,
+        "summary": summary,
+    }, ensure_ascii=False)
+
+def explore(sheet_name: str, row_code: str = "") -> str:
+    if sheet_name not in STATE["parsed"]:
+        raise ValueError(f"시트를 찾을 수 없습니다: {sheet_name}")
+
+    info = STATE["parsed"][sheet_name]
+    rows = info["rows"]
+    if not rows:
+        return json.dumps({
+            "unit": info["unit"],
+            "selected": "",
+            "name": "데이터 없음",
+            "rows": [],
+            "cells": [],
+        }, ensure_ascii=False)
+
+    selected_row = rows[0]
+    if row_code:
+        for r in rows:
+            if r["code"] == row_code:
+                selected_row = r
+                break
+
+    row_choices = [{"code": r["code"], "name": r["name"]} for r in rows]
+    return json.dumps({
+        "unit": info["unit"],
+        "selected": selected_row["code"],
+        "name": selected_row["name"],
+        "rows": row_choices,
+        "cells": selected_row["cells"],
     }, ensure_ascii=False)
