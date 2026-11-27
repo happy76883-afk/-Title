@@ -26,9 +26,11 @@ async function handle({ id, type, payload }) {
     } else if (type === 'linkage_shock') {
       py.globals.set('ls_input', JSON.stringify(payload));
       result = py.runPython('linkage_and_shock(ls_input)');
-    } else {
+    } else if (type === 'simulate') {
       py.globals.set('scenario_input', JSON.stringify(payload));
       result = py.runPython('simulate(scenario_input)');
+    } else {
+      throw Error('알 수 없는 요청 타입: ' + type);
     }
     postMessage({ id, ok: true, result: JSON.parse(result) });
   } catch (error) {
