@@ -1,6 +1,17 @@
 const $ = id => document.getElementById(id);
 const fmt = x => Number(x).toLocaleString('ko-KR', { maximumFractionDigits: 3 });
 
+const WORKBOOKS = [
+  { key: 'basic', label: '기본부문', file: '(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx' },
+  { key: 'major', label: '통합대분류', file: '(표)(2023연장)투입산출표_생산자가격_통합대분류.xlsx' },
+  { key: 'medium', label: '통합중분류', file: '(표)(2023연장)투입산출표_생산자가격_통합중분류.xlsx' },
+  { key: 'minor', label: '통합소분류', file: '(표)(2023연장)투입산출표_생산자가격_통합소분류.xlsx' }
+];
+
+const buffers = new Map();
+const fileStatuses = new Map();
+let activeKey = 'basic';
+
 let worker, nextId = 0, requests = new Map(), sectors = [], rowChoices = [], cells = [], basket = [], result = null;
 
 function text(tag, value) {
@@ -47,6 +58,8 @@ function options(el, list) {
 function invalidate() {
   result = null;
   $('results').hidden = true;
+  $('linkage-results').hidden = true;
+  $('shock-results').hidden = true;
 }
 
 const CONTROL_IDS = [
@@ -62,19 +75,36 @@ function setControlsDisabled(disabled) {
   }
 }
 
-async function load(buffer) {
+function updateFileSummary() {
+  $('file-summary').textContent = WORKBOOKS
+    .map(w => `${w.label}: ${fileStatuses.get(w.key) || '대기'}`)
+    .join(' | ');
+}
+
+async function activateDataset(key) {
+  const buf = buffers.get(key);
+  const meta = WORKBOOKS.find(w => w.key === key);
+  if (!buf || !meta) {
+    $('status').textContent = `${meta ? meta.label : key} 파일이 다운로드되지 않았습니다.`;
+    return;
+  }
+
+  activeKey = key;
+  $('dataset').value = key;
   invalidate();
   basket = [];
   renderBasket();
   setControlsDisabled(true);
 
   if (worker) worker.terminate();
-  for (const p of requests.values()) p.reject(Error('데이터 다시 로드'));
+  for (const p of requests.values()) p.reject(Error('데이터 전환'));
   requests.clear();
   startWorker();
 
   try {
-    const info = await call('init', buffer);
+    // ArrayBuffer가 worker로 transfer되어 비워지지 않도록 복사본 전달
+    const copy = buf.slice(0);
+    const info = await call('init', copy);
     sectors = info.sectors;
     options($('sector'), sectors);
     options($('linkage-sector'), sectors);
@@ -89,15 +119,15 @@ async function load(buffer) {
       return o;
     }));
 
-    $('validation').textContent = JSON.stringify(info.residuals, null, 2) + '\n최대 절대 잔차: 허용값 1e-8 미만';
+    $('validation').textContent = `[${meta.label}]\n` + JSON.stringify(info.residuals, null, 2) + '\n최대 절대 잔차: 허용값 1e-7 미만';
     setControlsDisabled(false);
 
     await explore();
-    $('status').textContent = '준비 완료 · ' + sectors.length + '개 부문 · ' + info.sheets.length + '개 시트 · 계수 검증 통과';
+    $('status').textContent = `${meta.label} 준비 완료 · ${sectors.length}개 부문 · ${info.sheets.length}개 시트 · 계수 검증 통과`;
     $('linkage-status').textContent = '기준 산업을 선택하고 연쇄효과 계산을 누르세요.';
     $('shock-status').textContent = '기준 산업과 충격률을 입력하고 공급충격 계산을 누르세요.';
   } catch (e) {
-    $('status').textContent = '준비 실패: ' + e.message + ' — 새로고침 후 재시도하세요.';
+    $('status').textContent = `${meta.label} 준비 실패: ${e.message}`;
   }
 }
 
@@ -135,6 +165,7 @@ function renderCells() {
   }));
 }
 
+$('dataset').onchange = () => activateDataset($('dataset').value);
 $('sheet').onchange = () => { $('row-search').value = ''; $('row').replaceChildren(); explore(); };
 $('row').onchange = explore;
 $('row-search').oninput = () => {
@@ -320,35 +351,42 @@ $('download').onclick = () => {
   const url = URL.createObjectURL(new Blob(['\ufeff' + rows.map(r => r.map(csvCell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'io-2023-results.csv';
+  a.download = `io-2023-${activeKey}-results.csv`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
-async function loadDefaultWorkbook() {
-  try {
-    $('status').textContent = '기본 Excel 내려받는 중…';
-    const response = await fetch('./data/io-2023.xlsx');
-    if (!response.ok) throw Error('기본 Excel 다운로드 실패 (HTTP ' + response.status + ')');
-    await load(await response.arrayBuffer());
-  } catch (error) {
-    $('status').textContent = '준비 실패: ' + error.message + ' — 연결 상태를 확인하고 새로고침하세요.';
-  }
-}
-
-$('load-basic').onclick = async () => {
+async function loadAllWorkbooks() {
   const button = $('load-basic');
   button.disabled = true;
-  button.textContent = '불러오는 중…';
-  try {
-    await loadDefaultWorkbook();
-    const ready = !$('sheet').disabled;
-    button.textContent = ready ? '기본부문 불러오기 완료' : '기본부문 다시 불러오기';
-    button.disabled = ready;
-  } finally {
-    if ($('sheet').disabled) {
-      button.disabled = false;
-      button.textContent = '기본부문 다시 불러오기';
+  button.textContent = '4개 엑셀 내려받는 중…';
+  $('status').textContent = '4개 엑셀 파일 다운로드 중…';
+
+  WORKBOOKS.forEach(w => fileStatuses.set(w.key, '다운로드 중'));
+  updateFileSummary();
+
+  await Promise.all(WORKBOOKS.map(async w => {
+    try {
+      const res = await fetch('./data/' + encodeURIComponent(w.file));
+      if (!res.ok) throw Error('HTTP ' + res.status);
+      buffers.set(w.key, await res.arrayBuffer());
+      fileStatuses.set(w.key, '완료');
+    } catch (err) {
+      fileStatuses.set(w.key, `실패(${err.message})`);
     }
+    updateFileSummary();
+  }));
+
+  const firstReady = WORKBOOKS.find(w => buffers.has(w.key));
+  if (firstReady) {
+    await activateDataset(buffers.has('basic') ? 'basic' : firstReady.key);
+  } else {
+    $('status').textContent = '4개 엑셀 모두 다운로드에 실패했습니다. data 폴더 파일명을 확인하세요.';
   }
-};
+
+  button.disabled = false;
+  button.textContent = '4개 엑셀 다시 불러오기';
+}
+
+$('load-basic').onclick = loadAllWorkbooks;
+window.addEventListener('DOMContentLoaded', loadAllWorkbooks);
