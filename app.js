@@ -1,3 +1,13 @@
+window.addEventListener("error", (e) => {
+  const el = document.getElementById("auto-status");
+  if (el) el.innerHTML = `<span class="err">스크립트 오류: ${e.message}</span>`;
+});
+
+window.addEventListener("unhandledrejection", (e) => {
+  const el = document.getElementById("auto-status");
+  if (el) el.innerHTML = `<span class="err">로드 오류: ${e.reason?.message || e.reason}</span>`;
+});
+
 const FILES = [
   { key: "basic", label: "기본부문", name: "(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx" },
   { key: "major", label: "통합대분류", name: "(표)(2023연장)투입산출표_생산자가격_통합대분류.xlsx" },
@@ -7,14 +17,10 @@ const FILES = [
 
 const state = {
   workbooks: {},
+  statusText: {},
   currentDatasetKey: "basic",
   shockItems: []
 };
-
-function setStatus(html) {
-  const el = document.getElementById("auto-status");
-  if (el) el.innerHTML = html;
-}
 
 function toNum(v) {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -29,17 +35,17 @@ function isNumericCell(v) {
   if (typeof v === "number") return Number.isFinite(v);
   if (v == null) return false;
   const s = String(v).replace(/,/g, "").trim();
-  return /^-?\d+(\.\d+)?\$/.test(s);
+  return /^-?\d+(\.\d+)?$/.test(s);
 }
 
 function isCodeToken(v) {
   const s = String(v ?? "").trim();
-  return /^[A-Z]?\d{2,7}\$/i.test(s);
+  return /^[A-Z]?\d{2,7}$/i.test(s);
 }
 
 function isPurePunctOrNum(v) {
   const s = String(v ?? "").replace(/,/g, "").trim();
-  return !s || /^-?[\d.]+$/.test(s) \vert{}\vert{} /^[-·…()]+$/.test(s);
+  return !s || /^-?[\d.]+$/.test(s) || /^[-·…()]+$/.test(s);
 }
 
 function isLabelText(v) {
@@ -47,11 +53,22 @@ function isLabelText(v) {
   return Boolean(s) && !isCodeToken(s) && !isPurePunctOrNum(s);
 }
 
-function isSummaryOrValueAdded(code, name) {
+function isNonSectorRow(code, name) {
   const c = String(code ?? "").trim();
   const n = String(name ?? "").trim();
-  if (/^(95|96|97|98|99)\d*\$/.test(c)) return true;
+  if (/^(95|96|97|98|99)\d*$/.test(c)) return true;
   return /(중간투입계|중간수요계|부가가치계|총투입계|총산출|총공급|피용자보수|영업잉여|고정자본소모|생산세|보조금|최종수요|민간소비|정부소비|총고정자본형성|재고증감|수출계|수입계|합계|소계|투입계수|유발계수)/.test(n);
+}
+
+function extractUnit(raw) {
+  for (let r = 0; r < Math.min(raw.length, 10); r++) {
+    for (const cell of raw[r] || []) {
+      const s = String(cell ?? "").trim();
+      if (/단위\s*[:：]/.test(s)) return s;
+      if (/^(백만원|억원|천원|원|지수|비율)$/.test(s)) return `단위 : ${s}`;
+    }
+  }
+  return "단위 : 백만원";
 }
 
 function parseSheetData(ws) {
@@ -60,22 +77,15 @@ function parseSheetData(ws) {
     return { unitText: "단위 : 백만원", allRows: [], sectors: [], matrix: [] };
   }
 
-  let unitText = "단위 : 백만원";
-  for (let r = 0; r < Math.min(raw.length, 10); r++) {
-    for (const c of raw[r] || []) {
-      const s = String(c ?? "").trim();
-      if (/단위\s*[:：]/.test(s)) unitText = s;
-    }
-  }
-
+  const unitText = extractUnit(raw);
   const maxCols = Math.max(...raw.map((r) => (Array.isArray(r) ? r.length : 0)), 1);
 
   let codeRowIdx = -1;
-  let maxHits = 0;
+  let maxCodeHits = 0;
   for (let r = 0; r < Math.min(raw.length, 25); r++) {
     const hits = (raw[r] || []).filter((c) => isCodeToken(c)).length;
-    if (hits >= 3 && hits > maxHits) {
-      maxHits = hits;
+    if (hits >= 3 && hits > maxCodeHits) {
+      maxCodeHits = hits;
       codeRowIdx = r;
     }
   }
@@ -83,8 +93,8 @@ function parseSheetData(ws) {
   let nameRowIdx = -1;
   if (codeRowIdx !== -1) {
     for (let r = codeRowIdx + 1; r <= Math.min(raw.length - 1, codeRowIdx + 3); r++) {
-      const labelHits = (raw[r] || []).filter((c) => isLabelText(c)).length;
-      if (labelHits >= 2) {
+      const hits = (raw[r] || []).filter((c) => isLabelText(c)).length;
+      if (hits >= 2) {
         nameRowIdx = r;
         break;
       }
@@ -107,18 +117,18 @@ function parseSheetData(ws) {
     return isCodeToken(cd) ? cd : nm;
   });
 
-  const startRow = Math.max(codeRowIdx, nameRowIdx) + 1;
+  const dataStartRow = Math.max(codeRowIdx, nameRowIdx) + 1;
   const allRows = [];
 
-  for (let r = startRow; r < raw.length; r++) {
+  for (let r = dataStartRow; r < raw.length; r++) {
     const row = raw[r];
     if (!Array.isArray(row)) continue;
 
-    const dup = row.filter((cell, c) => {
+    const dupCount = row.filter((cell, c) => {
       const val = String(cell ?? "").trim();
       return val && (val === String(nameRow[c] ?? "").trim() || val === String(codeRow[c] ?? "").trim());
     }).length;
-    if (dup >= 3) continue;
+    if (dupCount >= 3) continue;
 
     let rowCode = "";
     let rowName = "";
@@ -144,18 +154,19 @@ function parseSheetData(ws) {
     allRows.push({ rowIdx: r, code: rowCode, name: rowName, cells });
   }
 
+  // 시뮬레이션·연쇄·충격용 내생 산업 행(중간투입계·부가가치계·총투입계 등 제외)
   const endogenousRows = allRows.filter(
-    (item) => !isSummaryOrValueAdded(item.code, item.name) && item.cells.filter((c) => c.isNum).length >= 3
+    (item) => !isNonSectorRow(item.code, item.name) && item.cells.filter((c) => c.isNum).length >= 3
   );
 
-  const endogenousColIndices = [];
+  const endogenousCols = [];
   for (let c = 0; c < maxCols; c++) {
     const cd = colCodes[c];
     const nm = colNames[c];
-    if (isSummaryOrValueAdded(cd, nm) || /^9\d{3}\$/.test(cd)) continue;
+    if (isNonSectorRow(cd, nm) || /^9\d{3}$/.test(cd)) continue;
     const hasNum = endogenousRows.some((r) => r.cells[c]?.isNum);
-    if (hasNum && (isCodeToken(cd) || endogenousColIndices.length > 0)) {
-      endogenousColIndices.push(c);
+    if (hasNum && (isCodeToken(cd) || endogenousCols.length > 0)) {
+      endogenousCols.push(c);
     }
   }
 
@@ -165,7 +176,7 @@ function parseSheetData(ws) {
       : 2;
 
   const n = endogenousRows.length;
-  const colSpan = endogenousColIndices.length >= n && n > 0 ? endogenousColIndices : null;
+  const colSpan = endogenousCols.length >= n && n > 0 ? endogenousCols : null;
 
   const sectors = endogenousRows.map((item, idx) => ({
     idx,
@@ -182,6 +193,15 @@ function parseSheetData(ws) {
   );
 
   return { unitText, allRows, sectors, matrix };
+}
+
+function renderStatusBar() {
+  const bar = document.getElementById("auto-status");
+  if (!bar) return;
+  bar.innerHTML = FILES.map((f) => {
+    const st = state.statusText[f.key] || '<span class="err">대기</span>';
+    return `${f.label}: ${st}`;
+  }).join(" &nbsp;|&nbsp; ");
 }
 
 function getActiveSheet(key = state.currentDatasetKey) {
@@ -201,7 +221,8 @@ function syncDatasets() {
     if (!sel) continue;
     sel.innerHTML = "";
     for (const f of avail) {
-      const cnt = state.workbooks[f.key].sheets[state.workbooks[f.key].sheetNames[0]]?.sectors.length || 0;
+      const firstSheet = state.workbooks[f.key].sheetNames[0];
+      const cnt = state.workbooks[f.key].sheets[firstSheet]?.sectors.length || 0;
       const opt = document.createElement("option");
       opt.value = f.key;
       opt.textContent = `${f.label} (${cnt}개 산업)`;
@@ -246,11 +267,11 @@ function populateRows() {
     (r) => !q || r.name.toLowerCase().includes(q) || r.code.toLowerCase().includes(q)
   );
 
-  list.forEach((r, i) => {
+  list.forEach((r, idx) => {
     const opt = document.createElement("option");
     opt.value = String(r.rowIdx);
     opt.textContent = r.code ? `${r.code} ${r.name}` : r.name;
-    if (i === 0) opt.selected = true;
+    if (idx === 0) opt.selected = true;
     sel.appendChild(opt);
   });
 
@@ -273,9 +294,13 @@ function renderRawTable() {
     const codeStr = String(cell.colCode ?? "").trim();
     const nameStr = String(cell.colName ?? "").trim();
     const valStr = String(cell.rawVal ?? "").trim();
+
     if (!codeStr && !nameStr) return false;
-    if (idx < 2 && (!cell.isNum || valStr === targetRow.code || valStr === targetRow.name)) return false;
+    if (idx < 2 && (!cell.isNum || valStr === targetRow.code || valStr === targetRow.name)) {
+      return false;
+    }
     if (!isCodeToken(codeStr) && !isLabelText(nameStr)) return false;
+
     const combined = `${codeStr} ${nameStr}`.toLowerCase();
     return !colQ || combined.includes(colQ);
   });
@@ -283,10 +308,10 @@ function renderRawTable() {
   tbody.innerHTML = cols
     .slice(0, 250)
     .map((cell) => {
-      const val = cell.isNum
+      const displayVal = cell.isNum
         ? cell.numVal.toLocaleString("ko-KR", { maximumFractionDigits: 4 })
         : String(cell.rawVal ?? "");
-      return `<tr><td>${cell.colCode || "-"}</td><td>${cell.colName || "-"}</td><td class="num">${val}</td></tr>`;
+      return `<tr><td>${cell.colCode || "-"}</td><td>${cell.colName || "-"}</td><td class="num">${displayVal}</td></tr>`;
     })
     .join("");
 }
@@ -380,7 +405,10 @@ function runSimulation() {
 
   const totalDirect = directVec.reduce((a, b) => a + b, 0);
   const items = sectors.map((sec, i) => {
-    const indirect = directVec.reduce((acc, shockVal, j) => acc + shockVal * ((matrix[i]?.[j] || 0) / colTotals[j]), 0);
+    const indirect = directVec.reduce(
+      (acc, shockVal, j) => acc + shockVal * ((matrix[i]?.[j] || 0) / colTotals[j]),
+      0
+    );
     return { name: sec.name, direct: directVec[i], indirect, totalImpact: directVec[i] + indirect };
   });
 
@@ -499,4 +527,152 @@ function runShockSimulation() {
   if (!kpiEl || !tbody) return;
   kpiEl.innerHTML = "";
   tbody.innerHTML = "";
-  const sheet = ds?.sheets[ds.
+  const sheet = ds?.sheets[ds.sheetNames[0]];
+  if (!sheet || !sheet.sectors.length) return;
+
+  const targetIdx = Number(document.getElementById("shock-sector")?.value || 0);
+  const dRate = toNum(document.getElementById("demand-shock-rate")?.value) / 100;
+  const sRate = toNum(document.getElementById("supply-shock-rate")?.value) / 100;
+
+  const n = sheet.sectors.length;
+  const rowTotals = sheet.matrix.map((r) => r.reduce((a, b) => a + Math.max(0, b), 0) || 1);
+  const colTotals = Array.from({ length: n }, (_, c) =>
+    sheet.matrix.reduce((a, r) => a + Math.max(0, r[c] || 0), 0) || 1
+  );
+
+  const baseScale = rowTotals[targetIdx] || 1;
+  const rows = sheet.sectors.map((sec, idx) => {
+    const aIj = (sheet.matrix[idx]?.[targetIdx] || 0) / colTotals[targetIdx];
+    const bIj = (sheet.matrix[targetIdx]?.[idx] || 0) / rowTotals[targetIdx];
+    const dImpact = baseScale * dRate * aIj;
+    const sImpact = baseScale * sRate * bIj;
+    return { name: sec.name, dImpact, sImpact, total: dImpact + sImpact, absScore: Math.abs(dImpact) + Math.abs(sImpact) };
+  });
+
+  const sumD = rows.reduce((a, r) => a + r.dImpact, 0);
+  const sumS = rows.reduce((a, r) => a + r.sImpact, 0);
+
+  kpiEl.innerHTML = `
+    <div class="kpi"><div class="k-lbl">수요충격 파급 추정합</div><div class="k-val">${sumD.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div></div>
+    <div class="kpi"><div class="k-lbl">공급충격 파급 추정합</div><div class="k-val">${sumS.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div></div>
+    <div class="kpi"><div class="k-lbl">합산 충격 파급 추정</div><div class="k-val">${(sumD + sumS).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</div></div>
+  `;
+
+  tbody.innerHTML = [...rows]
+    .sort((a, b) => b.absScore - a.absScore)
+    .slice(0, 20)
+    .map(
+      (r, idx) =>
+        `<tr><td>${idx + 1}</td><td>${r.name}</td><td class="num">${r.dImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td><td class="num">${r.sImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td><td class="num">${r.total.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td></tr>`
+    )
+    .join("");
+}
+
+function downloadCSV(tableId, fileName) {
+  const table = document.getElementById(tableId);
+  if (!table) return;
+  const lines = [...table.querySelectorAll("tr")].map((tr) =>
+    [...tr.querySelectorAll("th, td")].map((td) => `"${td.textContent.trim().replace(/"/g, '""')}"`).join(",")
+  );
+  const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadOne(fileObj) {
+  const res = await fetch(`./data/${encodeURIComponent(fileObj.name)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buf = await res.arrayBuffer();
+  if (typeof XLSX === "undefined") throw new Error("XLSX 미로드");
+  const wb = XLSX.read(buf, { type: "array" });
+  const sheets = {};
+  for (const sName of wb.SheetNames) {
+    sheets[sName] = parseSheetData(wb.Sheets[sName]);
+  }
+  state.workbooks[fileObj.key] = { label: fileObj.label, sheetNames: wb.SheetNames, sheets };
+}
+
+async function autoLoadAll() {
+  for (const f of FILES) {
+    state.statusText[f.key] = "읽는 중...";
+  }
+  renderStatusBar();
+
+  for (const f of FILES) {
+    try {
+      await loadOne(f);
+      state.statusText[f.key] = '<span class="ok">로드 완료</span>';
+    } catch (err) {
+      state.statusText[f.key] = `<span class="err">${err.message}</span>`;
+    }
+    renderStatusBar();
+  }
+
+  const firstAvail = FILES.find((f) => state.workbooks[f.key]);
+  if (firstAvail) {
+    state.currentDatasetKey = firstAvail.key;
+    syncDatasets();
+    populateSheets();
+    runSimulation();
+  }
+}
+
+document.getElementById("btn-load-basic")?.addEventListener("click", async () => {
+  const basic = FILES.find((f) => f.key === "basic");
+  try {
+    await loadOne(basic);
+    state.statusText.basic = '<span class="ok">로드 완료</span>';
+    state.currentDatasetKey = "basic";
+    renderStatusBar();
+    syncDatasets();
+    populateSheets();
+    runSimulation();
+  } catch (err) {
+    state.statusText.basic = `<span class="err">${err.message}</span>`;
+    renderStatusBar();
+  }
+});
+
+document.getElementById("btn-reload-all")?.addEventListener("click", autoLoadAll);
+
+document.getElementById("dataset-select")?.addEventListener("change", (e) => {
+  state.currentDatasetKey = e.target.value;
+  const cSel = document.getElementById("chain-dataset");
+  const sSel = document.getElementById("shock-dataset");
+  if (cSel) cSel.value = e.target.value;
+  if (sSel) sSel.value = e.target.value;
+  populateSheets();
+  runSimulation();
+});
+
+document.getElementById("sheet-select")?.addEventListener("change", populateRows);
+document.getElementById("row-search")?.addEventListener("input", populateRows);
+document.getElementById("row-select")?.addEventListener("change", renderRawTable);
+document.getElementById("col-search")?.addEventListener("input", renderRawTable);
+
+document.getElementById("sim-search")?.addEventListener("input", populateSimSectors);
+document.getElementById("btn-add-shock")?.addEventListener("click", addShockItem);
+document.getElementById("btn-run-sim")?.addEventListener("click", runSimulation);
+document.getElementById("btn-clear-shock")?.addEventListener("click", () => {
+  state.shockItems = [];
+  renderBasket();
+  runSimulation();
+});
+
+document.getElementById("chain-dataset")?.addEventListener("change", populateChainSectors);
+document.getElementById("chain-sector")?.addEventListener("change", runChainAnalysis);
+document.getElementById("btn-run-chain")?.addEventListener("click", runChainAnalysis);
+
+document.getElementById("shock-dataset")?.addEventListener("change", populateShockSectors);
+document.getElementById("shock-sector")?.addEventListener("change", runShockSimulation);
+document.getElementById("btn-run-shock")?.addEventListener("click", runShockSimulation);
+
+document.getElementById("btn-csv-sim")?.addEventListener("click", () => downloadCSV("sim-table", "최종수요_파급효과.csv"));
+document.getElementById("btn-csv-chain")?.addEventListener("click", () => downloadCSV("chain-table", "전후방_연쇄효과.csv"));
+document.getElementById("btn-csv-shock")?.addEventListener("click", () => downloadCSV("shock-table", "공급수요_충격파급.csv"));
+
+window.addEventListener("DOMContentLoaded", autoLoadAll);
