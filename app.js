@@ -57,9 +57,7 @@ function isSummaryOrValueAdded(code, name) {
   const c = String(code ?? "").trim();
   const n = String(name ?? "").trim();
   if (/^(95|96|97|98|99)\d*$/.test(c)) return true;
-  return /(중간투입계|중간수요계|부가가치계|총투입계|총산출|총공급|피용자보수|영업잉여|고정자본소모|생산세|보조금|최종수요|민간소비|정부소비|총고정자본형성|재고증감|수출계|수입계|합계|소계|투입계수|유발계수)/.test(
-    n
-  );
+  return /(중간투입계|중간수요계|부가가치계|총투입계|총산출|총공급|피용자보수|영업잉여|고정자본소모|생산세|보조금|최종수요|민간소비|정부소비|총고정자본형성|재고증감|수출계|수입계|합계|소계|투입계수|유발계수)/.test(n);
 }
 
 function parseSheetData(ws) {
@@ -124,10 +122,7 @@ function parseSheetData(ws) {
 
     const dup = row.filter((cell, c) => {
       const val = String(cell ?? "").trim();
-      return (
-        val &&
-        (val === String(nameRow[c] ?? "").trim() || val === String(codeRow[c] ?? "").trim())
-      );
+      return val && (val === String(nameRow[c] ?? "").trim() || val === String(codeRow[c] ?? "").trim());
     }).length;
     if (dup >= 3) continue;
 
@@ -171,9 +166,7 @@ function parseSheetData(ws) {
   }
 
   const fallbackStart =
-    endogenousRows.length > 0
-      ? Math.max(0, endogenousRows[0].cells.findIndex((cell) => cell.isNum))
-      : 2;
+    endogenousRows.length > 0 ? Math.max(0, endogenousRows[0].cells.findIndex((cell) => cell.isNum)) : 2;
 
   const n = endogenousRows.length;
   const colSpan = endogenousColIndices.length >= n && n > 0 ? endogenousColIndices : null;
@@ -198,9 +191,7 @@ function parseSheetData(ws) {
 function renderStatus() {
   const box = document.getElementById("auto-status");
   if (!box) return;
-  box.innerHTML = FILES.map(
-    (f) => `${f.label}: ${state.statusHtml[f.key] || "대기"}`
-  ).join(" &nbsp;|&nbsp; ");
+  box.innerHTML = FILES.map((f) => `${f.label}: ${state.statusHtml[f.key] || "대기"}`).join(" &nbsp;|&nbsp; ");
 }
 
 function getActiveSheet(key = state.currentDatasetKey) {
