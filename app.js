@@ -7,6 +7,7 @@ const FILES = [
 
 const state = {
   workbooks: {},
+  loadStatusMap: {},
   currentDatasetKey: "basic",
   shockItems: []
 };
@@ -24,17 +25,17 @@ function isNumericCell(v) {
   if (typeof v === "number") return Number.isFinite(v);
   if (v == null) return false;
   const s = String(v).replace(/,/g, "").trim();
-  return /^-?\d+(\.\d+)?\$/.test(s);
+  return /^-?\d+(\.\d+)?$/.test(s);
 }
 
 function isCodeToken(v) {
   const s = String(v ?? "").trim();
-  return /^[A-Z]?\d{2,7}\$/i.test(s);
+  return /^[A-Z]?\d{2,7}$/i.test(s);
 }
 
 function isPurePunctOrNum(v) {
   const s = String(v ?? "").replace(/,/g, "").trim();
-  return !s || /^-?[\d.]+$/.test(s) \vert{}\vert{} /^[-·…()]+$/.test(s);
+  return !s || /^-?[\d.]+$/.test(s) || /^[-·…()]+$/.test(s);
 }
 
 function isLabelText(v) {
@@ -44,7 +45,7 @@ function isLabelText(v) {
 
 function isSummaryOrValueAddedCode(code) {
   const c = String(code ?? "").trim();
-  return /^(95|96|97|98|99)\d*\$/.test(c);
+  return /^(95|96|97|98|99)\d*$/.test(c);
 }
 
 function isSummaryOrValueAddedName(name) {
@@ -60,191 +61,12 @@ function extractUnitText(raw) {
     for (const cell of row) {
       const s = String(cell ?? "").trim();
       if (/단위\s*[:：]/.test(s)) return s;
-      if (/^(백만원|억원|천원|원|지수|비율)\$/.test(s)) return `단위 : ${s}`;
+      if (/^(백만원|억원|천원|원|지수|비율)$/.test(s)) return `단위 : ${s}`; } } return "단위 : 백만원"; }  function parseSheetData(ws) { const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }); if (!Array.isArray(raw) \vert{}\vert{} raw.length === 0) { return { unitText: "단위 : 백만원", colCodes: [], colNames: [], allRows: [], sectors: [], matrix: [] }; }  const unitText = extractUnitText(raw); const maxCols = Math.max(...raw.map((r) => (Array.isArray(r) ? r.length : 0)), 1);  let codeRowIdx = -1; let maxCodeHits = 0;  for (let r = 0; r < Math.min(raw.length, 25); r++) { const row = raw[r] \vert{}\vert{} []; const hits = row.filter((c) => isCodeToken(c)).length; if (hits >= 3 && hits > maxCodeHits) { maxCodeHits = hits; codeRowIdx = r; } }  let nameRowIdx = -1; if (codeRowIdx !== -1) { for (let r = codeRowIdx + 1; r <= Math.min(raw.length - 1, codeRowIdx + 3); r++) { const row = raw[r] \vert{}\vert{} []; const labelHits = row.filter((c) => isLabelText(c)).length; if (labelHits >= 2) { nameRowIdx = r; break; } } }  if (nameRowIdx === -1) { let bestScore = -1; for (let r = 0; r < Math.min(raw.length, 25); r++) { if (r === codeRowIdx) continue; const row = raw[r] \vert{}\vert{} []; const labelHits = row.filter((c) => isLabelText(c)).length; const kwBonus = row.some((c) => /(부문\vert{}합계\vert{}중간투입\vert{}부가가치\vert{}최종수요\vert{}총산출\vert{}수입\vert{}수출\vert{}소비\vert{}투자)/.test(String(c ?? "")) ) ? 5 : 0; const score = labelHits + kwBonus; if (labelHits >= 2 && score > bestScore) { bestScore = score; nameRowIdx = r; } } }  if (nameRowIdx === -1) nameRowIdx = codeRowIdx !== -1 ? codeRowIdx : 0;  const codeRow = codeRowIdx !== -1 ? raw[codeRowIdx] \vert{}\vert{} [] : []; const nameRow = raw[nameRowIdx] \vert{}\vert{} [];  const colCodes = Array.from({ length: maxCols }, (_, c) => { const cd = String(codeRow[c] ?? "").trim(); return isCodeToken(cd) ? cd : ""; });  const colNames = Array.from({ length: maxCols }, (_, c) => { const nm = String(nameRow[c] ?? "").trim(); if (isLabelText(nm)) return nm; const cd = String(codeRow[c] ?? "").trim(); return isCodeToken(cd) ? cd : nm; });  const dataStartRow = Math.max(codeRowIdx, nameRowIdx) + 1; const allRows = [];  for (let r = dataStartRow; r < raw.length; r++) { const row = raw[r]; if (!Array.isArray(row)) continue;  const headerDupCount = row.filter((cell, c) => { const val = String(cell ?? "").trim(); return val && (val === String(nameRow[c] ?? "").trim() \vert{}\vert{} val === String(codeRow[c] ?? "").trim()); }).length; if (headerDupCount >= 3) continue;  let rowCode = ""; let rowName = "";  for (let c = 0; c < Math.min(4, maxCols); c++) { const val = String(row[c] ?? "").trim(); if (!val) continue; if (!rowCode && isCodeToken(val)) { rowCode = val; } else if (!rowName && isLabelText(val)) { rowName = val; } }  if (!rowName) continue; if (!row.some((cell) => isNumericCell(cell))) continue;  const cells = Array.from({ length: maxCols }, (_, c) => ({ colIdx: c, colCode: colCodes[c], colName: colNames[c], rawVal: row[c], numVal: toNum(row[c]), isNum: isNumericCell(row[c]) }));  allRows.push({ rowIdx: r, code: rowCode, name: rowName, cells }); }  const endogenousRows = allRows.filter((item) => { if (isSummaryOrValueAddedCode(item.code)) return false; if (isSummaryOrValueAddedName(item.name)) return false; return item.cells.filter((c) => c.isNum).length >= 3; });  const endogenousColIndices = []; for (let c = 0; c < maxCols; c++) { const cd = colCodes[c]; const nm = colNames[c]; if (isSummaryOrValueAddedCode(cd) \vert{}\vert{} /^9\d{3}$/.test(cd)) continue; if (isSummaryOrValueAddedName(nm)) continue; const hasNumInCol = endogenousRows.some((r) => r.cells[c]?.isNum); if (hasNumInCol && (isCodeToken(cd) \vert{}\vert{} endogenousColIndices.length > 0)) { endogenousColIndices.push(c); } }  const fallbackStart = endogenousRows.length > 0 ? Math.max(0, endogenousRows[0].cells.findIndex((cell) => cell.isNum)) : 2;  const n = endogenousRows.length; const colSpan = endogenousColIndices.length >= n && n > 0 ? endogenousColIndices : null;  const sectors = endogenousRows.map((item, idx) => ({ idx, code: item.code \vert{}\vert{} String(idx + 1).padStart(3, "0"), name: item.name }));  const matrix = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => { const targetCol = colSpan ? colSpan[j] : fallbackStart + j; const cell = endogenousRows[i].cells[targetCol]; return cell ? cell.numVal : 0; }) );  return { unitText, colCodes, colNames, allRows, sectors, matrix }; }  function getActiveSheet(datasetKey = state.currentDatasetKey) { const ds = state.workbooks[datasetKey]; if (!ds \vert{}\vert{} !ds.sheetNames.length) return null; const chosenSheet = datasetKey === state.currentDatasetKey ? document.getElementById("sheet-select")?.value \vert{}\vert{} ds.sheetNames[0] : ds.sheetNames[0]; return { ds, sheetName: chosenSheet, data: ds.sheets[chosenSheet] \vert{}\vert{} ds.sheets[ds.sheetNames[0]] }; }  function renderAutoStatus() { const bar = document.getElementById("auto-status"); if (!bar) return; const parts = FILES.map((f) => { const info = state.loadStatusMap[f.key]; if (!info) { return `${f.label}: <span class="err">대기 중</span>`;
     }
-  }
-  return "단위 : 백만원";
-}
-
-function parseSheetData(ws) {
-  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-  if (!Array.isArray(raw) || raw.length === 0) {
-    return { unitText: "단위 : 백만원", colCodes: [], colNames: [], allRows: [], sectors: [], matrix: [] };
-  }
-
-  const unitText = extractUnitText(raw);
-  const maxCols = Math.max(...raw.map((r) => (Array.isArray(r) ? r.length : 0)), 1);
-
-  // 상단 25행에서 코드 행과 부문명/항목명 행 탐색
-  let codeRowIdx = -1;
-  let maxCodeHits = 0;
-
-  for (let r = 0; r < Math.min(raw.length, 25); r++) {
-    const row = raw[r] || [];
-    const hits = row.filter((c) => isCodeToken(c)).length;
-    if (hits >= 3 && hits > maxCodeHits) {
-      maxCodeHits = hits;
-      codeRowIdx = r;
+    if (info.ok) {
+      return `\${f.label}: <span class="ok">로드 완료</span>`;
     }
-  }
-
-  let nameRowIdx = -1;
-  if (codeRowIdx !== -1) {
-    for (let r = codeRowIdx + 1; r <= Math.min(raw.length - 1, codeRowIdx + 3); r++) {
-      const row = raw[r] || [];
-      const labelHits = row.filter((c) => isLabelText(c)).length;
-      if (labelHits >= 2) {
-        nameRowIdx = r;
-        break;
-      }
-    }
-  }
-
-  if (nameRowIdx === -1) {
-    let bestScore = -1;
-    for (let r = 0; r < Math.min(raw.length, 25); r++) {
-      if (r === codeRowIdx) continue;
-      const row = raw[r] || [];
-      const labelHits = row.filter((c) => isLabelText(c)).length;
-      const kwBonus = row.some((c) =>
-        /(부문|합계|중간투입|부가가치|최종수요|총산출|수입|수출|소비|투자)/.test(String(c ?? ""))
-      )
-        ? 5
-        : 0;
-      const score = labelHits + kwBonus;
-      if (labelHits >= 2 && score > bestScore) {
-        bestScore = score;
-        nameRowIdx = r;
-      }
-    }
-  }
-
-  if (nameRowIdx === -1) nameRowIdx = codeRowIdx !== -1 ? codeRowIdx : 0;
-
-  const codeRow = codeRowIdx !== -1 ? raw[codeRowIdx] || [] : [];
-  const nameRow = raw[nameRowIdx] || [];
-
-  const colCodes = Array.from({ length: maxCols }, (_, c) => {
-    const cd = String(codeRow[c] ?? "").trim();
-    return isCodeToken(cd) ? cd : "";
-  });
-
-  const colNames = Array.from({ length: maxCols }, (_, c) => {
-    const nm = String(nameRow[c] ?? "").trim();
-    if (isLabelText(nm)) return nm;
-    const cd = String(codeRow[c] ?? "").trim();
-    return isCodeToken(cd) ? cd : nm;
-  });
-
-  const dataStartRow = Math.max(codeRowIdx, nameRowIdx) + 1;
-  const allRows = [];
-
-  for (let r = dataStartRow; r < raw.length; r++) {
-    const row = raw[r];
-    if (!Array.isArray(row)) continue;
-
-    const headerDupCount = row.filter((cell, c) => {
-      const val = String(cell ?? "").trim();
-      return val && (val === String(nameRow[c] ?? "").trim() || val === String(codeRow[c] ?? "").trim());
-    }).length;
-    if (headerDupCount >= 3) continue;
-
-    let rowCode = "";
-    let rowName = "";
-
-    for (let c = 0; c < Math.min(4, maxCols); c++) {
-      const val = String(row[c] ?? "").trim();
-      if (!val) continue;
-      if (!rowCode && isCodeToken(val)) {
-        rowCode = val;
-      } else if (!rowName && isLabelText(val)) {
-        rowName = val;
-      }
-    }
-
-    if (!rowName) continue;
-    if (!row.some((cell) => isNumericCell(cell))) continue;
-
-    const cells = Array.from({ length: maxCols }, (_, c) => ({
-      colIdx: c,
-      colCode: colCodes[c],
-      colName: colNames[c],
-      rawVal: row[c],
-      numVal: toNum(row[c]),
-      isNum: isNumericCell(row[c])
-    }));
-
-    allRows.push({
-      rowIdx: r,
-      code: rowCode,
-      name: rowName,
-      cells
-    });
-  }
-
-  // 2·3·4번 계산용 내생 산업 행(부가가치계·중간투입계·총투입계 등 제외)
-  const endogenousRows = allRows.filter((item) => {
-    if (isSummaryOrValueAddedCode(item.code)) return false;
-    if (isSummaryOrValueAddedName(item.name)) return false;
-    return item.cells.filter((c) => c.isNum).length >= 3;
-  });
-
-  const endogenousColIndices = [];
-  for (let c = 0; c < maxCols; c++) {
-    const cd = colCodes[c];
-    const nm = colNames[c];
-    if (isSummaryOrValueAddedCode(cd) || /^9\d{3}\$/.test(cd)) continue;
-    if (isSummaryOrValueAddedName(nm)) continue;
-    const hasNumInCol = endogenousRows.some((r) => r.cells[c]?.isNum);
-    if (hasNumInCol && (isCodeToken(cd) || endogenousColIndices.length > 0)) {
-      endogenousColIndices.push(c);
-    }
-  }
-
-  const fallbackStart =
-    endogenousRows.length > 0
-      ? Math.max(0, endogenousRows[0].cells.findIndex((cell) => cell.isNum))
-      : 2;
-
-  const n = endogenousRows.length;
-  const colSpan = endogenousColIndices.length >= n && n > 0 ? endogenousColIndices : null;
-
-  const sectors = endogenousRows.map((item, idx) => ({
-    idx,
-    code: item.code || String(idx + 1).padStart(3, "0"),
-    name: item.name
-  }));
-
-  const matrix = Array.from({ length: n }, (_, i) =>
-    Array.from({ length: n }, (_, j) => {
-      const targetCol = colSpan ? colSpan[j] : fallbackStart + j;
-      const cell = endogenousRows[i].cells[targetCol];
-      return cell ? cell.numVal : 0;
-    })
-  );
-
-  return { unitText, colCodes, colNames, allRows, sectors, matrix };
-}
-
-function getActiveSheet(datasetKey = state.currentDatasetKey) {
-  const ds = state.workbooks[datasetKey];
-  if (!ds || !ds.sheetNames.length) return null;
-  const chosenSheet =
-    datasetKey === state.currentDatasetKey
-      ? document.getElementById("sheet-select")?.value || ds.sheetNames[0]
-      : ds.sheetNames[0];
-  return {
-    ds,
-    sheetName: chosenSheet,
-    data: ds.sheets[chosenSheet] || ds.sheets[ds.sheetNames[0]]
-  };
-}
-
-function renderAutoStatus() {
-  const bar = document.getElementById("auto-status");
-  const parts = FILES.map((f) => {
-    const ready = !!state.workbooks[f.key];
-    return `${f.label}: <span class="${ready ? "ok" : "err"}">${ready ? "자동 로드 완료" : "미로드"}</span>`;
+    return `\${f.label}: <span class="err">\${info.msg}</span>`;
   });
   bar.innerHTML = parts.join(" &nbsp;|&nbsp; ");
 }
@@ -310,7 +132,7 @@ function populateRowDropdown() {
   list.forEach((r, idx) => {
     const opt = document.createElement("option");
     opt.value = String(r.rowIdx);
-    opt.textContent = r.code ? `${r.code} ${r.name}` : r.name;
+    opt.textContent = r.code ? `${r.code}${r.name}` : r.name;
     if (idx === 0) opt.selected = true;
     sel.appendChild(opt);
   });
@@ -340,7 +162,7 @@ function renderRawTable() {
     }
     if (!isCodeToken(codeStr) && !isLabelText(nameStr)) return false;
 
-    const combined = `${codeStr} ${nameStr}`.toLowerCase();
+    const combined = `${codeStr}${nameStr}`.toLowerCase();
     return !colQ || combined.includes(colQ);
   });
 
@@ -352,9 +174,9 @@ function renderRawTable() {
         : String(cell.rawVal ?? "");
       return `
         <tr>
-          <td>${cell.colCode || "-"}</td>
-          <td>${cell.colName || "-"}</td>
-          <td class="num">${displayVal}</td>
+          <td>\${cell.colCode || "-"}</td>
+          <td>\${cell.colName || "-"}</td>
+          <td class="num">\${displayVal}</td>
         </tr>
       `;
     })
@@ -375,7 +197,7 @@ function populateSimDropdown() {
   for (const s of list) {
     const opt = document.createElement("option");
     opt.value = String(s.idx);
-    opt.textContent = `[${s.code}] ${s.name}`;
+    opt.textContent = `[${s.code}]${s.name}`;
     sel.appendChild(opt);
   }
 }
@@ -393,8 +215,8 @@ function renderBasket() {
       .map(
         (item, idx) => `
       <div class="basket-item">
-        <span><strong>[${item.sectorCode}] ${item.sectorName}</strong> (${item.datasetLabel}) — +${item.amount.toLocaleString("ko-KR")} 백만원</span>
-        <button class="del-btn" type="button" data-del="${idx}">삭제</button>
+        <span><strong>[${item.sectorCode}]${item.sectorName}</strong> (${item.datasetLabel}) — +${item.amount.toLocaleString("ko-KR")} 백만원</span>
+        <button class="del-btn" type="button" data-del="\${idx}">삭제</button>
       </div>
     `
       )
@@ -479,15 +301,15 @@ function runSimulation() {
   kpiEl.innerHTML = `
     <div class="kpi">
       <div class="k-lbl">직접 수요 증가 합계</div>
-      <div class="k-val">${totalDirect.toLocaleString("ko-KR")} 백만원</div>
+      <div class="k-val">\${totalDirect.toLocaleString("ko-KR")} 백만원</div>
     </div>
     <div class="kpi">
       <div class="k-lbl">중간투입 간접 파급 합계</div>
-      <div class="k-val">${sumIndirect.toLocaleString("ko-KR", { maximumFractionDigits: 1 })} 백만원</div>
+      <div class="k-val">\${sumIndirect.toLocaleString("ko-KR", { maximumFractionDigits: 1 })} 백만원</div>
     </div>
     <div class="kpi">
       <div class="k-lbl">총 수요유발 파급합</div>
-      <div class="k-val">${sumTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })} 백만원</div>
+      <div class="k-val">\${sumTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })} 백만원</div>
     </div>
   `;
 
@@ -496,11 +318,11 @@ function runSimulation() {
     .map(
       (m, idx) => `
       <tr>
-        <td>${idx + 1}</td>
-        <td>${m.name}</td>
-        <td class="num">${m.direct.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
-        <td class="num">${m.indirect.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
-        <td class="num">${m.totalImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td>\${idx + 1}</td>
+        <td>\${m.name}</td>
+        <td class="num">\${m.direct.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td class="num">\${m.indirect.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
+        <td class="num">\${m.totalImpact.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</td>
       </tr>
     `
     )
@@ -520,7 +342,7 @@ function populateChainDropdown() {
   sheet.sectors.forEach((sec, idx) => {
     const opt = document.createElement("option");
     opt.value = String(idx);
-    opt.textContent = `[${sec.code}] ${sec.name}`;
+    opt.textContent = `[${sec.code}]${sec.name}`;
     sel.appendChild(opt);
   });
 
@@ -550,4 +372,57 @@ function runChainAnalysis() {
   );
 
   const allBackwardSums = Array.from({ length: n }, (_, j) =>
-    Array.from({ length: n }, (_, i) => (sheet.matrix[i]?.[j] || 0) / colTotals[j]).reduce((a,
+    Array.from({ length: n }, (_, i) => (sheet.matrix[i]?.[j] || 0) / colTotals[j]).reduce((a, b) => a + b, 0)
+  );
+  const allForwardSums = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (_, j) => (sheet.matrix[i]?.[j] || 0) / rowTotals[i]).reduce((a, b) => a + b, 0)
+  );
+
+  const avgBackward = allBackwardSums.reduce((a, b) => a + b, 0) / (n || 1) || 1;
+  const avgForward = allForwardSums.reduce((a, b) => a + b, 0) / (n || 1) || 1;
+
+  const backwardSum = allBackwardSums[targetIdx] || 0;
+  const forwardSum = allForwardSums[targetIdx] || 0;
+  const powerIdx = backwardSum / avgBackward;
+  const sensIdx = forwardSum / avgForward;
+
+  kpiEl.innerHTML = `
+    <div class="kpi">
+      <div class="k-lbl">후방연쇄 계수합 (투입계수)</div>
+      <div class="k-val">\${backwardSum.toFixed(4)}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-lbl">전방연쇄 계수합 (산출계수)</div>
+      <div class="k-val">\${forwardSum.toFixed(4)}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-lbl">영향력계수 (후방 상대지수)</div>
+      <div class="k-val">\${powerIdx.toFixed(3)}</div>
+    </div>
+    <div class="kpi">
+      <div class="k-lbl">감응도계수 (전방 상대지수)</div>
+      <div class="k-val">\${sensIdx.toFixed(3)}</div>
+    </div>
+  `;
+
+  const rows = sheet.sectors.map((sec, idx) => {
+    const aIj = (sheet.matrix[idx]?.[targetIdx] || 0) / colTotals[targetIdx];
+    const bIj = (sheet.matrix[targetIdx]?.[idx] || 0) / rowTotals[targetIdx];
+    return {
+      name: sec.name,
+      aIj,
+      bIj,
+      linkSum: aIj + bIj
+    };
+  });
+
+  const top = [...rows].sort((a, b) => b.linkSum - a.linkSum).slice(0, 20);
+  tbody.innerHTML = top
+    .map(
+      (r, idx) => `
+      <tr>
+        <td>\${idx + 1}</td>
+        <td>\${r.name}</td>
+        <td class="num">\${r.aIj.toFixed(4)}</td>
+        <td class="num">\${r.bIj.toFixed(4)}</td>
+        <td class="num
