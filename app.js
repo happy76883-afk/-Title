@@ -1,3 +1,7 @@
+window.addEventListener("error", (e) => {
+  const b = document.getElementById("auto-status");
+  if (b) b.textContent = "에러: " + e.message;
+});
 const FILES = [
   { key: "basic", label: "기본부문", name: "(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx" },
   { key: "major", label: "통합대분류", name: "(표)(2023연장)투입산출표_생산자가격_통합대분류.xlsx" },
