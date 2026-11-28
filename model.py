@@ -31,15 +31,33 @@ def norm_code(val):
 def is_sector_code(code):
     if not code:
         return False
-    # 합계/부가가치/최종수요 등 9000번대 요약코드 제외
     if code.isdigit() and int(code) >= 9000:
         return False
     if re.fullmatch(r'9\d{3}', code):
         return False
     if any(k in code for k in ('합계', '계', '부가가치', '최종수요', '총투입', '총산출')):
         return False
-    # 숫자, 영문, 하이픈/언더스코어 조합 코드 허용
     return bool(re.fullmatch(r'[0-9A-Za-z_-]+', code))
+
+
+def build_row_index(rows):
+    ri = {}
+    for i, r in enumerate(rows):
+        if r and r[0] is not None:
+            k = norm_code(r[0])
+            if k and k not in ri:
+                ri[k] = i
+    return ri
+
+
+def build_col_index(header_row):
+    ci = {}
+    for i, c in enumerate(header_row):
+        if c is not None:
+            k = norm_code(c)
+            if k and k not in ci:
+                ci[k] = i
+    return ci
 
 
 def initialize(raw):
@@ -68,8 +86,8 @@ def initialize(raw):
 
     def matrix(s):
         rows = book[s]
-        ri = {norm_code(r[0]): i for i, r in enumerate(rows) if r and r[0] is not None and norm_code(r[0]) not in ri}
-        ci = {norm_code(c): i for i, c in enumerate(rows[4]) if c is not None and norm_code(c) not in ci}
+        ri = build_row_index(rows)
+        ci = build_col_index(rows[4])
         a = np.array([[rows[ri[c]][ci[k]] for k in codes] for c in codes], dtype=float)
         if not np.isfinite(a).all():
             raise ValueError(s + ': 비수치 또는 결측 데이터')
@@ -83,7 +101,7 @@ def initialize(raw):
     a_mat = matrix('총투입계수(A)')
 
     rows = book['총투입계수(A)']
-    ci = {norm_code(c): i for i, c in enumerate(rows[4]) if c is not None and norm_code(c) not in ci}
+    ci = build_col_index(rows[4])
     vr = next(r for r in rows if r and norm_code(r[0]) == '9690')
     v_vec = np.array([vr[ci[c]] for c in codes], dtype=float)
 
