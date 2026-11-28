@@ -43,6 +43,7 @@ const DATASETS = [
 
 const cache = new Map();
 const errors = new Map();
+const allValidation = new Map();
 
 let worker, nextId = 0, requests = new Map(), sectors = [], rowChoices = [], cells = [], basket = [], result = null, currentKey = 'basic';
 
@@ -116,6 +117,29 @@ function refreshSwitchButtons() {
   }
 }
 
+function renderValidationSummary() {
+  const lines = [];
+  for (const d of DATASETS) {
+    if (allValidation.has(d.key)) {
+      lines.push(`[${d.label} - OK] ` + JSON.stringify(allValidation.get(d.key)));
+    } else if (errors.has(d.key)) {
+      lines.push(`[${d.label} - FAIL] ${errors.get(d.key)}`);
+    } else {
+      lines.push(`[${d.label} - 대기]`);
+    }
+  }
+  lines.push('최대 절대 잔차: 허용값 1e-7 미만');
+  $('validation').textContent = lines.join('\n');
+}
+
+async function initInWorker(buf) {
+  if (worker) worker.terminate();
+  for (const p of requests.values()) p.reject(Error('데이터 다시 로드'));
+  requests.clear();
+  startWorker();
+  return await call('init', buf.slice(0));
+}
+
 async function activateDataset(key) {
   const cfg = DATASETS.find(d => d.key === key);
   if (!cfg) return;
@@ -132,13 +156,11 @@ async function activateDataset(key) {
   renderBasket();
   setControlsDisabled(true);
 
-  if (worker) worker.terminate();
-  for (const p of requests.values()) p.reject(Error('데이터 전환'));
-  requests.clear();
-  startWorker();
-
   try {
-    const info = await call('init', buf.slice(0));
+    const info = await initInWorker(buf);
+    allValidation.set(key, info.residuals);
+    renderValidationSummary();
+
     sectors = info.sectors;
     options($('sector'), sectors);
     options($('linkage-sector'), sectors);
@@ -153,15 +175,19 @@ async function activateDataset(key) {
       return o;
     }));
 
-    $('validation').textContent = `[${cfg.label}]\n` + JSON.stringify(info.residuals, null, 2) + '\n최대 절대 잔차: 허용값 1e-7 미만';
     setControlsDisabled(false);
-
     await explore();
+
     const okList = DATASETS.filter(d => cache.has(d.key)).map(d => d.label).join(', ');
-    $('status').textContent = `현재: ${cfg.label} (${sectors.length}개 부문) · 로드됨: [${okList}]`;
+    const failList = DATASETS.filter(d => errors.has(d.key)).map(d => `${d.label}(${errors.get(d.key)})`).join(', ');
+    $('status').textContent = failList
+      ? `현재: ${cfg.label} (${sectors.length}개 부문) · 성공: [${okList}] · 실패: [${failList}]`
+      : `전체 로드 완료 · 현재: ${cfg.label} (${sectors.length}개 부문) · [${okList}]`;
     $('linkage-status').textContent = '기준 산업을 선택하고 연쇄효과 계산을 누르세요.';
     $('shock-status').textContent = '기준 산업과 충격률을 입력하고 공급충격 계산을 누르세요.';
   } catch (e) {
+    errors.set(key, e.message);
+    renderValidationSummary();
     $('status').textContent = `${cfg.label} 준비 실패: ${e.message}`;
   }
 }
@@ -190,17 +216,38 @@ async function loadAllAtOnce() {
   setControlsDisabled(true);
   cache.clear();
   errors.clear();
+  allValidation.clear();
   refreshSwitchButtons();
+  renderValidationSummary();
   $('status').textContent = '기본·대분류·중분류·소분류 4개 엑셀 한 번에 내려받는 중…';
 
   await Promise.all(DATASETS.map(d => fetchOne(d)));
   refreshSwitchButtons();
+  renderValidationSummary();
 
-  const firstOk = DATASETS.find(d => cache.has(d.key));
-  if (firstOk) {
-    await activateDataset(firstOk.key);
+  // 다운로드된 4개 파일을 순차 검증해 검증 통과된 항목만 활성화
+  const verifiedKeys = [];
+  for (const d of DATASETS) {
+    if (!cache.has(d.key)) continue;
+    try {
+      $('status').textContent = `${d.label} 계수 검증 중…`;
+      const info = await initInWorker(cache.get(d.key));
+      allValidation.set(d.key, info.residuals);
+      verifiedKeys.push(d.key);
+    } catch (e) {
+      cache.delete(d.key);
+      errors.set(d.key, e.message);
+    }
+  }
+
+  refreshSwitchButtons();
+  renderValidationSummary();
+
+  if (verifiedKeys.length > 0) {
+    const startKey = verifiedKeys.includes('basic') ? 'basic' : verifiedKeys[0];
+    await activateDataset(startKey);
   } else {
-    $('status').textContent = '4개 엑셀 모두 다운로드에 실패했습니다. data 폴더를 확인하세요.';
+    $('status').textContent = '4개 엑셀 모두 로드에 실패했습니다. data 폴더 파일명과 형식을 확인하세요.';
   }
   $('load-all').disabled = false;
 }
