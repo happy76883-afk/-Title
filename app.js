@@ -1,41 +1,48 @@
 const $ = id => document.getElementById(id);
 const fmt = x => Number(x).toLocaleString('ko-KR', { maximumFractionDigits: 3 });
 
-const DATASETS = {
-  basic: {
+const DATASETS = [
+  {
+    key: 'basic',
     label: '기본부문',
-    btnId: 'load-basic',
+    btnId: 'switch-basic',
     urls: [
       './data/(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx',
       './data/' + encodeURIComponent('(표)(2023연장)투입산출표_생산자가격_기본부문.xlsx'),
       './data/io-2023.xlsx'
     ]
   },
-  major: {
+  {
+    key: 'major',
     label: '대분류',
-    btnId: 'load-major',
+    btnId: 'switch-major',
     urls: [
       './data/(표)(2023연장)투입산출표_생산자가격_통합대분류.xlsx',
       './data/' + encodeURIComponent('(표)(2023연장)투입산출표_생산자가격_통합대분류.xlsx')
     ]
   },
-  medium: {
+  {
+    key: 'medium',
     label: '중분류',
-    btnId: 'load-medium',
+    btnId: 'switch-medium',
     urls: [
       './data/(표)(2023연장)투입산출표_생산자가격_통합중분류.xlsx',
       './data/' + encodeURIComponent('(표)(2023연장)투입산출표_생산자가격_통합중분류.xlsx')
     ]
   },
-  minor: {
+  {
+    key: 'minor',
     label: '소분류',
-    btnId: 'load-minor',
+    btnId: 'switch-minor',
     urls: [
       './data/(표)(2023연장)투입산출표_생산자가격_통합소분류.xlsx',
       './data/' + encodeURIComponent('(표)(2023연장)투입산출표_생산자가격_통합소분류.xlsx')
     ]
   }
-};
+];
+
+const cache = new Map();
+const errors = new Map();
 
 let worker, nextId = 0, requests = new Map(), sectors = [], rowChoices = [], cells = [], basket = [], result = null, currentKey = 'basic';
 
@@ -100,26 +107,38 @@ function setControlsDisabled(disabled) {
   }
 }
 
-function setLoaderButtonsDisabled(disabled) {
-  for (const key of Object.keys(DATASETS)) {
-    const btn = $(DATASETS[key].btnId);
-    if (btn) btn.disabled = disabled;
+function refreshSwitchButtons() {
+  for (const d of DATASETS) {
+    const btn = $(d.btnId);
+    if (!btn) continue;
+    btn.disabled = !cache.has(d.key);
+    btn.style.outline = d.key === currentKey ? '2px solid #1f2328' : 'none';
   }
 }
 
-async function load(buffer, label) {
+async function activateDataset(key) {
+  const cfg = DATASETS.find(d => d.key === key);
+  if (!cfg) return;
+  const buf = cache.get(key);
+  if (!buf) {
+    $('status').textContent = `${cfg.label} 불러오기 실패: ${errors.get(key) || '파일 없음'}`;
+    return;
+  }
+
+  currentKey = key;
+  refreshSwitchButtons();
   invalidate();
   basket = [];
   renderBasket();
   setControlsDisabled(true);
 
   if (worker) worker.terminate();
-  for (const p of requests.values()) p.reject(Error('데이터 다시 로드'));
+  for (const p of requests.values()) p.reject(Error('데이터 전환'));
   requests.clear();
   startWorker();
 
   try {
-    const info = await call('init', buffer);
+    const info = await call('init', buf.slice(0));
     sectors = info.sectors;
     options($('sector'), sectors);
     options($('linkage-sector'), sectors);
@@ -134,16 +153,56 @@ async function load(buffer, label) {
       return o;
     }));
 
-    $('validation').textContent = `[${label}]\n` + JSON.stringify(info.residuals, null, 2) + '\n최대 절대 잔차: 허용값 1e-7 미만';
+    $('validation').textContent = `[${cfg.label}]\n` + JSON.stringify(info.residuals, null, 2) + '\n최대 절대 잔차: 허용값 1e-7 미만';
     setControlsDisabled(false);
 
     await explore();
-    $('status').textContent = `${label} 준비 완료 · ${sectors.length}개 부문 · ${info.sheets.length}개 시트 · 계수 검증 통과`;
+    const okList = DATASETS.filter(d => cache.has(d.key)).map(d => d.label).join(', ');
+    $('status').textContent = `현재: ${cfg.label} (${sectors.length}개 부문) · 로드됨: [${okList}]`;
     $('linkage-status').textContent = '기준 산업을 선택하고 연쇄효과 계산을 누르세요.';
     $('shock-status').textContent = '기준 산업과 충격률을 입력하고 공급충격 계산을 누르세요.';
   } catch (e) {
-    $('status').textContent = `${label} 준비 실패: ${e.message}`;
+    $('status').textContent = `${cfg.label} 준비 실패: ${e.message}`;
   }
+}
+
+async function fetchOne(cfg) {
+  let lastErr = '파일 없음';
+  for (const url of cfg.urls) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        lastErr = `HTTP ${res.status}`;
+        continue;
+      }
+      cache.set(cfg.key, await res.arrayBuffer());
+      errors.delete(cfg.key);
+      return;
+    } catch (err) {
+      lastErr = err.message;
+    }
+  }
+  errors.set(cfg.key, lastErr);
+}
+
+async function loadAllAtOnce() {
+  $('load-all').disabled = true;
+  setControlsDisabled(true);
+  cache.clear();
+  errors.clear();
+  refreshSwitchButtons();
+  $('status').textContent = '기본·대분류·중분류·소분류 4개 엑셀 한 번에 내려받는 중…';
+
+  await Promise.all(DATASETS.map(d => fetchOne(d)));
+  refreshSwitchButtons();
+
+  const firstOk = DATASETS.find(d => cache.has(d.key));
+  if (firstOk) {
+    await activateDataset(firstOk.key);
+  } else {
+    $('status').textContent = '4개 엑셀 모두 다운로드에 실패했습니다. data 폴더를 확인하세요.';
+  }
+  $('load-all').disabled = false;
 }
 
 let exploreSeq = 0;
@@ -370,34 +429,9 @@ $('download').onclick = () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
-async function loadDataset(key) {
-  const cfg = DATASETS[key];
-  if (!cfg) return;
-  currentKey = key;
-  setLoaderButtonsDisabled(true);
-  $('status').textContent = `${cfg.label} Excel 내려받는 중…`;
-
-  let lastErr = '파일을 찾을 수 없습니다.';
-  for (const url of cfg.urls) {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        lastErr = `HTTP ${response.status}`;
-        continue;
-      }
-      await load(await response.arrayBuffer(), cfg.label);
-      setLoaderButtonsDisabled(false);
-      return;
-    } catch (error) {
-      lastErr = error.message;
-    }
-  }
-
-  $('status').textContent = `${cfg.label} 준비 실패: ${lastErr} — data 폴더의 파일명을 확인하세요.`;
-  setLoaderButtonsDisabled(false);
-}
-
-$('load-basic').onclick = () => loadDataset('basic');
-$('load-major').onclick = () => loadDataset('major');
-$('load-medium').onclick = () => loadDataset('medium');
-$('load-minor').onclick = () => loadDataset('minor');
+$('load-all').onclick = loadAllAtOnce;
+$('switch-basic').onclick = () => activateDataset('basic');
+$('switch-major').onclick = () => activateDataset('major');
+$('switch-medium').onclick = () => activateDataset('medium');
+$('switch-minor').onclick = () => activateDataset('minor');
+window.addEventListener('DOMContentLoaded', loadAllAtOnce);
