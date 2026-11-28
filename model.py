@@ -1,4 +1,4 @@
-import json, io
+import json, io, re
 import numpy as np
 import openpyxl
 
@@ -20,6 +20,28 @@ def emit(x):
     return json.dumps(x, ensure_ascii=False, allow_nan=False)
 
 
+def norm_code(val):
+    if val is None:
+        return ''
+    if isinstance(val, float) and val.is_integer():
+        return str(int(val))
+    return str(val).strip()
+
+
+def is_sector_code(code):
+    if not code:
+        return False
+    # 합계/부가가치/최종수요 등 9000번대 요약코드 제외
+    if code.isdigit() and int(code) >= 9000:
+        return False
+    if re.fullmatch(r'9\d{3}', code):
+        return False
+    if any(k in code for k in ('합계', '계', '부가가치', '최종수요', '총투입', '총산출')):
+        return False
+    # 숫자, 영문, 하이픈/언더스코어 조합 코드 허용
+    return bool(re.fullmatch(r'[0-9A-Za-z_-]+', code))
+
+
 def initialize(raw):
     global book, codes, names, L, M, V, v_vec, ad, am, a_mat, sheets, valid
     wb = openpyxl.load_workbook(io.BytesIO(bytes(raw)), read_only=True, data_only=True)
@@ -28,17 +50,26 @@ def initialize(raw):
     sheets = list(book)
 
     base = book['국산투입계수(Ad)']
-    codes = [str(c).strip() for c in base[4][2:] if c is not None and str(c).strip().isdigit() and int(str(c).strip()) < 9000]
-    if len(codes) < 10 or len(set(codes)) != len(codes):
-        raise ValueError(f'부문 코드를 정상 인식하지 못했습니다. (인식 개수: {len(codes)})')
+    nm = {}
+    for r in base[6:]:
+        if r and r[0] is not None and len(r) > 1 and r[1] is not None:
+            k = norm_code(r[0])
+            v = str(r[1]).strip()
+            if k and v and k not in nm:
+                nm[k] = v
 
-    nm = {str(r[0]).strip(): str(r[1]).strip() for r in base[6:] if r and r[0] is not None and len(r) > 1 and r[1] is not None}
+    raw_codes = [norm_code(c) for c in base[4][2:]]
+    codes = [c for c in raw_codes if is_sector_code(c) and c in nm]
+
+    if len(codes) < 5 or len(set(codes)) != len(codes):
+        raise ValueError(f'부문 코드를 정상 인식하지 못했습니다. (인식 개수: {len(codes)}, 후보: {raw_codes[:10]})')
+
     names = [nm[c] for c in codes]
 
     def matrix(s):
         rows = book[s]
-        ri = {str(r[0]).strip(): i for i, r in enumerate(rows) if r and r[0] is not None}
-        ci = {str(c).strip(): i for i, c in enumerate(rows[4]) if c is not None}
+        ri = {norm_code(r[0]): i for i, r in enumerate(rows) if r and r[0] is not None and norm_code(r[0]) not in ri}
+        ci = {norm_code(c): i for i, c in enumerate(rows[4]) if c is not None and norm_code(c) not in ci}
         a = np.array([[rows[ri[c]][ci[k]] for k in codes] for c in codes], dtype=float)
         if not np.isfinite(a).all():
             raise ValueError(s + ': 비수치 또는 결측 데이터')
@@ -52,8 +83,8 @@ def initialize(raw):
     a_mat = matrix('총투입계수(A)')
 
     rows = book['총투입계수(A)']
-    ci = {str(c).strip(): i for i, c in enumerate(rows[4]) if c is not None}
-    vr = next(r for r in rows if r and str(r[0]).strip() == '9690')
+    ci = {norm_code(c): i for i, c in enumerate(rows[4]) if c is not None and norm_code(c) not in ci}
+    vr = next(r for r in rows if r and norm_code(r[0]) == '9690')
     v_vec = np.array([vr[ci[c]] for c in codes], dtype=float)
 
     residuals = {
@@ -75,8 +106,12 @@ def initialize(raw):
 
 def explore(sheet, rowcode):
     rows = book[sheet]
-    choices = [{'code': str(r[0]).strip(), 'name': str(r[1]).strip()} for r in rows[6:] if len(r) > 1 and r[0] is not None and r[1] is not None]
-    chosen = next((r for r in rows[6:] if len(r) > 1 and str(r[0]).strip() == rowcode), None)
+    choices = [
+        {'code': norm_code(r[0]), 'name': str(r[1]).strip()}
+        for r in rows[6:]
+        if len(r) > 1 and r[0] is not None and r[1] is not None and norm_code(r[0])
+    ]
+    chosen = next((r for r in rows[6:] if len(r) > 1 and norm_code(r[0]) == rowcode), None)
     if chosen is None:
         chosen = next(r for r in rows[6:] if len(r) > 1 and r[0] is not None and r[1] is not None)
 
@@ -89,11 +124,11 @@ def explore(sheet, rowcode):
             val = float(val)
         elif val is not None:
             val = str(val)
-        cells.append({'code': str(rows[4][i]).strip(), 'name': str(rows[5][i] or '').strip(), 'value': val})
+        cells.append({'code': norm_code(rows[4][i]), 'name': str(rows[5][i] or '').strip(), 'value': val})
 
     return emit({
         'rows': choices,
-        'selected': str(chosen[0]).strip(),
+        'selected': norm_code(chosen[0]),
         'name': str(chosen[1]).strip(),
         'unit': str(rows[3][0] or '계수').replace('係数', '계수 / 비율: 행·열 명칭 확인'),
         'cells': cells,
@@ -143,7 +178,7 @@ def linkage_and_shock(payload):
         raise ValueError('검증된 데이터가 없습니다.')
     data = json.loads(payload)
     mode = data.get('mode', 'linkage')
-    target_code = str(data.get('code', '')).strip()
+    target_code = norm_code(data.get('code', ''))
     top_k = max(1, min(100, int(data.get('top_k', 15))))
     shock_pct = float(data.get('shock_pct', 10.0))
 
